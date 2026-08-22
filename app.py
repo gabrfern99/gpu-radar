@@ -44,13 +44,6 @@ SORTS = {
 }
 
 
-def _flag(name: str, default=False) -> bool:
-    v = request.args.get(name)
-    if v is None:
-        return default
-    return v.lower() in ("1", "true", "yes", "on")
-
-
 def _iso_age_hours(row) -> float | None:
     stamp = row.get("posted_at") or row.get("first_seen")
     if not stamp:
@@ -80,34 +73,52 @@ def decorate(row: dict) -> dict:
 
 @app.route("/")
 def index():
-    return render_template("index.html", cfg=CFG,
-                           subscribe=notify.subscribe_url())
+    """
+    Renders with the default view's data already inlined, so the grid paints
+    with real cards instead of flashing skeletons while the first fetch lands.
+    """
+    return render_template(
+        "index.html", cfg=CFG, subscribe=notify.subscribe_url(),
+        initial_listings=fetch_listings({"price_max": CFG["max_price"], "limit": 300}),
+        initial_stats=api_stats().get_json(),
+    )
 
 
 # ---------------------------------------------------------------------------
 # api
 # ---------------------------------------------------------------------------
 
-@app.get("/api/listings")
-def api_listings():
-    q          = (request.args.get("q") or "").strip()
-    brand      = request.args.get("brand") or ""
-    model      = request.args.get("model") or ""
-    city       = request.args.get("city") or ""
-    klass      = request.args.get("class") or ""
-    sort       = SORTS.get(request.args.get("sort", "score"), SORTS["score"])
-    limit      = min(int(request.args.get("limit", 300)), 1000)
-    price_max  = request.args.get("price_max", type=int)
-    price_min  = request.args.get("price_min", type=int)
-    perf_min   = request.args.get("perf_min", type=int)
-    max_age    = request.args.get("max_age_h", type=int)
+def fetch_listings(args) -> list[dict]:
+    """Shared by /api/listings and the initial server-side render."""
+    get = args.get
+
+    def flag(name, default=False):
+        v = get(name)
+        return default if v is None else str(v).lower() in ("1", "true", "yes", "on")
+
+    def num(name):
+        v = get(name)
+        try:
+            return int(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    q     = (get("q") or "").strip()
+    brand = get("brand") or ""
+    model = get("model") or ""
+    city  = get("city") or ""
+    klass = get("class") or ""
+    sort  = SORTS.get(get("sort") or "score", SORTS["score"])
+    limit = min(num("limit") or 300, 1000)
+    price_max, price_min = num("price_max"), num("price_min")
+    perf_min, max_age = num("perf_min"), num("max_age_h")
 
     where, params = ["model_key IS NOT NULL", "price IS NOT NULL"], []
-    if not _flag("include_gone"):
+    if not flag("include_gone"):
         where.append("gone = 0")
-    if not _flag("include_suspect"):
+    if not flag("include_suspect"):
         where.append("suspect = 0")
-    if not _flag("include_combos"):
+    if not flag("include_combos"):
         where.append("kind = 'gpu'")
     if price_max is not None:
         where.append("price <= ?"); params.append(price_max)
@@ -122,21 +133,25 @@ def api_listings():
     if city:
         where.append("city = ?"); params.append(city)
     if klass:
-        where.append("deal_class IN (%s)" % ",".join("?" * len(klass.split(","))))
-        params += klass.split(",")
+        parts = klass.split(",")
+        where.append("deal_class IN (%s)" % ",".join("?" * len(parts)))
+        params += parts
     if q:
         where.append("(LOWER(title) LIKE ? OR LOWER(location) LIKE ? OR LOWER(model_name) LIKE ?)")
-        needle = f"%{q.lower()}%"
-        params += [needle, needle, needle]
+        params += [f"%{q.lower()}%"] * 3
 
-    sql = (f"SELECT * FROM listings WHERE {' AND '.join(where)} "
-           f"ORDER BY {sort} LIMIT ?")
+    sql = f"SELECT * FROM listings WHERE {' AND '.join(where)} ORDER BY {sort} LIMIT ?"
     with db.connect() as con:
         rows = [decorate(db.row_to_dict(r)) for r in con.execute(sql, params + [limit])]
 
     if max_age is not None:
         rows = [r for r in rows if r["age_hours"] is not None and r["age_hours"] <= max_age]
+    return rows
 
+
+@app.get("/api/listings")
+def api_listings():
+    rows = fetch_listings(request.args)
     return jsonify({"count": len(rows), "listings": rows})
 
 

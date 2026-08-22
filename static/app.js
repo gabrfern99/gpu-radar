@@ -173,6 +173,7 @@ function card(x) {
   const off = Math.round((x.discount ?? 0) * 100);
   const img = x.image
     ? `<img src="${esc(x.image)}" alt="" loading="lazy" decoding="async"
+            referrerpolicy="no-referrer"
             onerror="this.parentElement.innerHTML='<div class=noimg>sem foto</div>'">`
     : '<div class="noimg">sem foto</div>';
   const flags = (x.flags || []).filter(f => FLAG_LABEL[f])
@@ -244,7 +245,7 @@ function renderHero() {
   h.className = "hero";
   h.innerHTML = `
     <div class="hero-img">${best.image
-      ? `<img src="${esc(best.image)}" alt="">`
+      ? `<img src="${esc(best.image)}" alt="" referrerpolicy="no-referrer">`
       : '<div class="noimg" style="display:grid;place-items:center;height:100%;color:var(--ink-3)">sem foto</div>'}
     </div>
     <div class="hero-body">
@@ -342,7 +343,8 @@ async function openDrawer(id) {
 
   d.innerHTML = `
     <button class="close" title="Fechar (Esc)">✕</button>
-    <div class="drawer-hero">${x.image ? `<img src="${esc(x.image)}" alt="">` : ""}</div>
+    <div class="drawer-hero">${x.image
+      ? `<img src="${esc(x.image)}" alt="" referrerpolicy="no-referrer">` : ""}</div>
     <div class="drawer-body">
       <div class="hero-kicker" style="color:${CLASS_COLOR[x.deal_class]}">
         ${CLASS_LABEL[x.deal_class]} · nota ${Math.round(x.deal_score)}/100
@@ -542,10 +544,24 @@ function poll(ms = 60000) {
 }
 
 (async function boot() {
-  $("#grid").innerHTML = Array.from({ length: 8 },
-    () => '<div class="sk"><div class="a"></div><div class="b"></div></div>').join("");
   bind();
-  await load({ announce: false });
+
+  // Paint from the server-inlined payload when the view is still the default
+  // one; any hash filter means the inlined data does not match what was asked
+  // for, so fall through to a fetch.
+  const pristine = !location.hash.slice(1);
+  const seed = window.RADAR.initial;
+  if (pristine && seed?.listings) {
+    listings = seed.listings;
+    stats = seed.stats;
+    knownIds = new Set(listings.map(x => x.id));
+    firstLoad = false;
+    renderStats(); renderHero(); renderGrid(); renderTables();
+  } else {
+    $("#grid").innerHTML = Array.from({ length: 8 },
+      () => '<div class="sk"><div class="a"></div><div class="b"></div></div>').join("");
+    await load({ announce: false });
+  }
   poll();
   if ("Notification" in window && Notification.permission === "default") {
     document.addEventListener("click", () => Notification.requestPermission(), { once: true });

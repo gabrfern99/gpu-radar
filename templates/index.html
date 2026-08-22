@@ -6,6 +6,9 @@
 <title>GPU Radar · Grande Goiânia + Anápolis</title>
 <meta name="description" content="Radar de placas de vídeo na OLX — Grande Goiânia e Anápolis, até R$ {{ cfg.max_price }}.">
 <meta name="color-scheme" content="dark">
+<!-- img.olx.com.br 403s any request that carries a Referer (hotlink
+     protection), so every listing photo has to be fetched without one. -->
+<meta name="referrer" content="no-referrer">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -188,7 +191,13 @@
     minPrice: {{ cfg.min_price }},
     alertMin: {{ cfg.alert_min_score }},
     homeCity: {{ cfg.home_city | tojson }},
-    subscribe: {{ subscribe | tojson }}
+    subscribe: {{ subscribe | tojson }},
+    // Inlined by the server so the grid paints with real cards on first
+    // load instead of flashing skeletons.
+    initial: {
+      listings: {{ initial_listings | tojson }},
+      stats: {{ initial_stats | tojson }}
+    }
   };
 </script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>

@@ -192,6 +192,14 @@ Title matching is deliberately fussy, because sellers are not:
 
 ## Notes
 
+`img.olx.com.br` returns **403 to any request carrying a `Referer`**, so every
+listing photo is loaded under a `no-referrer` policy. Drop that and the whole
+grid goes photoless.
+
+The dashboard ships the default view's data inlined in the HTML, so the grid
+paints real cards on first load instead of flashing skeletons; a hash filter
+falls through to a normal fetch.
+
 Pages are server-rendered, so this reads the same HTML a browser would; there
 is no private API involved. Requests are paced and retried with backoff — OLX
 answers `403` when pushed, and clears within seconds. Be a good citizen and
