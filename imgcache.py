@@ -79,6 +79,26 @@ def warm(urls, workers: int = 6) -> tuple[int, int]:
     return ok, len(todo) - ok
 
 
+def prune(keep_urls) -> tuple[int, int]:
+    """
+    Drop cached photos no live listing points at any more. Listings churn, so
+    without this the cache grows forever. Returns (removed, bytes_freed).
+    """
+    if not CACHE.exists():
+        return 0, 0
+    keep = {path_for(rel).name for rel in
+            (rel_of(u or "") for u in keep_urls) if rel}
+    removed = freed = 0
+    for f in CACHE.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.endswith(".part") or f.name not in keep:
+            freed += f.stat().st_size
+            f.unlink(missing_ok=True)
+            removed += 1
+    return removed, freed
+
+
 def stats() -> dict:
     if not CACHE.exists():
         return {"files": 0, "bytes": 0}

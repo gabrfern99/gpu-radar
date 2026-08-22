@@ -495,6 +495,14 @@ def sweep(verbose=True) -> dict:
     if got or missed:
         log(f"cached {got} new photos" + (f", {missed} failed" if missed else ""))
 
+    # Listings churn, so drop photos nothing points at any more.
+    with db.connect() as con:
+        live = [r[0] for r in con.execute(
+            "SELECT image FROM listings WHERE image IS NOT NULL")]
+    gone_imgs, freed = imgcache.prune(live)
+    if gone_imgs:
+        log(f"pruned {gone_imgs} orphaned photos ({freed // 1024} KB)")
+
     # ---- alert ----------------------------------------------------------
     to_alert.sort(key=lambda c: -c["deal_score"])
     to_alert = to_alert[:CFG["max_alerts_per_run"]]
