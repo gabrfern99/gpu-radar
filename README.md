@@ -75,7 +75,7 @@ Região Metropolitana de Goiânia, plus Anápolis.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/gpu-radar.git
+git clone https://github.com/gabrfern99/gpu-radar.git
 cd gpu-radar
 pip3 install -r requirements.txt          # or: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 python3 scraper.py                        # first sweep, ~3 min
