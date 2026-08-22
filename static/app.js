@@ -8,12 +8,23 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const CLASS_LABEL = { steal: "ACHADO", great: "ÓTIMO", good: "BOM", fair: "RAZOÁVEL", meh: "FRACO" };
 const CLASS_COLOR = { steal: "#ff4d6d", great: "#fb923c", good: "#34d399", fair: "#60a5fa", meh: "#64748b" };
+const BAND_LABEL = { metro: "Grande Goiânia", anapolis: "Anápolis",
+                     nearby: "~120 km", extra: "adicionada" };
+const DRIVER_LABEL = { AMD: "amdgpu · Mesa", Intel: "Xe · Mesa",
+                       NVIDIA: "driver proprietário" };
 const FLAG_LABEL = {
   mining: "minerada", broken: "com defeito", new: "nova", used: "usada",
   warranty: "garantia", invoice: "nota fiscal", bundle: "com brinde", trade: "troca",
 };
 
 const brl = v => v == null ? "—" : "R$ " + Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+
+/* img.olx.com.br 403s any request carrying a foreign Referer, and browser
+   privacy settings/extensions can put one back however we ask them not to.
+   Serving the photos through our own /img/ proxy removes the browser from
+   the question entirely — and caches them on disk. */
+const OLX_IMG = /^https?:\/\/img\.olx\.com\.br\//;
+const photo = u => !u ? null : (OLX_IMG.test(u) ? "/img/" + u.replace(OLX_IMG, "") : u);
 
 /* SQLite stores tz-aware ISO strings ("…T19:32:20+00:00"). Only stamp a Z on
    the ones that carry no zone at all, or Date() gets an invalid string. */
@@ -35,6 +46,7 @@ const DEFAULTS = {
   q: "", brand: "", city: "", sort: "score", classes: [],
   pmax: window.RADAR.budget, perfmin: 40,
   fresh: false, combos: false, suspect: false, gone: false,
+  nearby: true, prio: false, openonly: false,
 };
 
 const state = { ...DEFAULTS, ...readHash() };
@@ -81,7 +93,16 @@ function query() {
   if (state.combos) p.set("include_combos", 1);
   if (state.suspect) p.set("include_suspect", 1);
   if (state.gone) p.set("include_gone", 1);
+  if (!state.nearby) p.set("band", "metro,anapolis,extra");
   return p;
+}
+
+/* These two are cheap enough to filter client-side. */
+function visible() {
+  let out = listings;
+  if (state.prio) out = out.filter(x => x.priority);
+  if (state.openonly) out = out.filter(x => x.linux?.open);
+  return out;
 }
 
 async function load({ announce = true } = {}) {
@@ -116,6 +137,7 @@ function renderStats() {
   $("#st-budget").textContent = stats.in_budget ?? 0;
   $("#st-steal").textContent  = (stats.by_class?.steal ?? 0) + (stats.by_class?.great ?? 0);
   $("#st-live").textContent   = stats.live ?? 0;
+  $("#st-prio").textContent   = stats.priority_count ?? 0;
 
   const r = stats.last_run;
   if (r?.finished) {
@@ -159,8 +181,10 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
 
 function tags(x) {
   const t = [];
+  if (x.priority) t.push('<i class="tag prio">★ na sua lista</i>');
   if (x.city === window.RADAR.homeCity) t.push(`<i class="tag local">${esc(x.city)}</i>`);
   else if (x.city) t.push(`<i class="tag">${esc(x.city)}</i>`);
+  if (x.band === "nearby") t.push('<i class="tag far">~120 km</i>');
   if (x.age_hours != null && x.age_hours <= 24) t.push('<i class="tag fresh">novo</i>');
   if (x.price_drops)  t.push(`<i class="tag drop">↓ ${x.price_drops}× baixou</i>`);
   if (x.suspect)      t.push('<i class="tag warn">suspeito</i>');
@@ -172,7 +196,7 @@ function tags(x) {
 function card(x) {
   const off = Math.round((x.discount ?? 0) * 100);
   const img = x.image
-    ? `<img src="${esc(x.image)}" alt="" loading="lazy" decoding="async"
+    ? `<img src="${esc(photo(x.image))}" alt="" loading="lazy" decoding="async"
             referrerpolicy="no-referrer"
             onerror="this.parentElement.innerHTML='<div class=noimg>sem foto</div>'">`
     : '<div class="noimg">sem foto</div>';
@@ -186,6 +210,10 @@ function card(x) {
         <span class="model-badge">
           <i class="brand-dot brand-${esc(x.brand)}"></i>${esc(x.model_name)}
           <b class="vram">${x.vram}GB</b>
+        </span>
+        <span class="drv ${x.linux?.open ? "open" : "prop"}"
+              title="${esc(x.linux?.stack || "")} — ${esc(x.linux?.note || "")}">
+          ${x.linux?.open ? "◆ driver aberto" : "◇ proprietário"}
         </span>
       </div>
     </div>
@@ -216,8 +244,9 @@ function card(x) {
 
 function renderGrid() {
   const g = $("#grid");
-  $("#count").textContent = `${listings.length} anúncio${listings.length === 1 ? "" : "s"}`;
-  if (!listings.length) {
+  const rows = visible();
+  $("#count").textContent = `${rows.length} anúncio${rows.length === 1 ? "" : "s"}`;
+  if (!rows.length) {
     g.innerHTML = `<div class="empty-state">
       <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
@@ -225,7 +254,7 @@ function renderGrid() {
       <p>Solte o preço máximo, baixe a força mínima, ou rode uma varredura.</p></div>`;
     return;
   }
-  g.innerHTML = listings.map(card).join("");
+  g.innerHTML = rows.map(card).join("");
   $$(".card", g).forEach((el, i) => {
     el.style.animationDelay = Math.min(i, 8) * 18 + "ms";   // keep the stagger short
     el.addEventListener("click", () => openDrawer(el.dataset.id));
@@ -234,7 +263,13 @@ function renderGrid() {
 }
 
 function renderHero() {
-  const best = listings.find(x => x.in_budget && !x.suspect && x.kind === "gpu") || listings[0];
+  // Prefer a shortlisted card, then any open-driver card, before falling back
+  // to the plain top-scorer — the score already leans that way, this just
+  // keeps the headline slot honest about your priorities.
+  const ok = x => x.in_budget && !x.suspect && x.kind === "gpu";
+  const best = listings.find(x => ok(x) && x.priority)
+    || listings.find(x => ok(x) && x.linux?.open)
+    || listings.find(ok) || listings[0];
   const h = $("#hero");
   if (!best) {
     h.className = "hero empty";
@@ -245,11 +280,13 @@ function renderHero() {
   h.className = "hero";
   h.innerHTML = `
     <div class="hero-img">${best.image
-      ? `<img src="${esc(best.image)}" alt="" referrerpolicy="no-referrer">`
+      ? `<img src="${esc(photo(best.image))}" alt="" referrerpolicy="no-referrer">`
       : '<div class="noimg" style="display:grid;place-items:center;height:100%;color:var(--ink-3)">sem foto</div>'}
     </div>
     <div class="hero-body">
-      <div class="hero-kicker"><i class="dot"></i>Melhor achado agora · nota ${Math.round(best.deal_score)}/100</div>
+      <div class="hero-kicker"><i class="dot"></i>
+        ${best.priority ? "★ Da sua lista · " : ""}Melhor achado agora · nota ${Math.round(best.deal_score)}/100
+      </div>
       <h2>${esc(best.title)}</h2>
       <div class="hero-row">
         <span class="hero-price" style="color:${CLASS_COLOR[best.deal_class]}">${brl(best.price)}</span>
@@ -344,13 +381,18 @@ async function openDrawer(id) {
   d.innerHTML = `
     <button class="close" title="Fechar (Esc)">✕</button>
     <div class="drawer-hero">${x.image
-      ? `<img src="${esc(x.image)}" alt="" referrerpolicy="no-referrer">` : ""}</div>
+      ? `<img src="${esc(photo(x.image))}" alt="" referrerpolicy="no-referrer">` : ""}</div>
     <div class="drawer-body">
       <div class="hero-kicker" style="color:${CLASS_COLOR[x.deal_class]}">
         ${CLASS_LABEL[x.deal_class]} · nota ${Math.round(x.deal_score)}/100
       </div>
       <h2>${esc(x.title)}</h2>
       ${flags ? `<div class="flagline">${flags}</div>` : ""}
+      ${x.linux ? `<p style="margin:0;padding:11px 14px;border-radius:10px;font-size:13px;
+        background:${x.linux.open ? "rgba(52,211,153,.09)" : "rgba(251,191,36,.09)"};
+        border:1px solid ${x.linux.open ? "rgba(52,211,153,.28)" : "rgba(251,191,36,.28)"};
+        color:${x.linux.open ? "var(--good)" : "var(--amber)"}">
+        ${x.linux.open ? "◆" : "◇"} <b>${esc(x.linux.stack)}</b> — ${esc(x.linux.note)}</p>` : ""}
       ${x.suspect ? `<p style="margin:0;padding:11px 14px;border-radius:10px;
         background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);
         color:var(--amber);font-size:13px">⚠ Muito abaixo do mercado para esse modelo.
@@ -369,6 +411,10 @@ async function openDrawer(id) {
         <div><dt>tier</dt><dd>${Math.round(x.perf)}</dd></div>
         <div><dt>pts / R$1k</dt><dd>${x.perf_per_1k?.toFixed(0)}</dd></div>
         <div><dt>cidade</dt><dd style="font-size:14px">${esc(x.city || "—")}</dd></div>
+        <div><dt>distância</dt><dd style="font-size:14px">${esc(BAND_LABEL[x.band] || "—")}</dd></div>
+        <div><dt>driver linux</dt>
+          <dd style="font-size:13px;color:${x.linux?.open ? "var(--good)" : "var(--amber)"}">
+            ${esc(DRIVER_LABEL[x.brand] || "—")}</dd></div>
         <div><dt>publicado</dt><dd style="font-size:14px">${esc(x.date_text || "—")}</dd></div>
         <div><dt>visto</dt><dd>${x.seen_count}×</dd></div>
         <div><dt>baixas</dt><dd>${x.price_drops}</dd></div>
@@ -397,7 +443,7 @@ async function openDrawer(id) {
         ${x.peers.map(p => `<a class="peer" href="${esc(p.url)}" target="_blank" rel="noopener">
           <span class="p">${brl(p.price)}</span>
           <span class="t">${esc(p.title)}</span>
-          <span class="s">${esc(p.city || "")} · ${Math.round(p.deal_score)}</span></a>`).join("")}
+          <span class="s">${esc(p.city || "")}${p.band === "nearby" ? " ~120km" : ""} · ${Math.round(p.deal_score)}</span></a>`).join("")}
       </div>` : ""}
     </div>`;
 
@@ -431,7 +477,7 @@ function notifyBrowser(x) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   const n = new Notification(`${CLASS_LABEL[x.deal_class]}: ${x.model_name} — ${brl(x.price)}`, {
     body: `${x.title}\n${x.city || ""} · nota ${Math.round(x.deal_score)}/100`,
-    icon: x.image || undefined, tag: "gpu-" + x.id,
+    icon: photo(x.image) || undefined, tag: "gpu-" + x.id,
   });
   n.onclick = () => { window.focus(); openDrawer(x.id); };
 }
@@ -480,7 +526,8 @@ function bind() {
     };
   });
 
-  [["#t-fresh", "fresh"], ["#t-combos", "combos"], ["#t-suspect", "suspect"], ["#t-gone", "gone"]]
+  [["#t-fresh", "fresh"], ["#t-combos", "combos"], ["#t-suspect", "suspect"],
+   ["#t-gone", "gone"], ["#t-nearby", "nearby"], ["#t-prio", "prio"], ["#t-open", "openonly"]]
     .forEach(([sel, key]) => {
       const el = $(sel);
       el.setAttribute("aria-pressed", String(state[key]));

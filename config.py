@@ -23,8 +23,25 @@ DEFAULTS = {
     "alert_suspect": False,     # also alert on suspiciously-cheap listings
     "alert_combos": False,      # also alert on whole-PC listings
     "home_city": "Goiânia",     # closest city — small scoring nudge
-    "extra_cities": [],         # widen the allowlist in region.py, e.g. ["Itumbiara"]
-    "strict_region": True,      # drop anything outside Greater Goiânia + Anápolis
+    "extra_cities": [],         # add cities region.py does not list, e.g. ["Itumbiara"]
+    "include_nearby": True,     # include the ~120 km second ring (region.NEARBY)
+    "strict_region": True,      # drop anything outside the allowlist entirely
+
+    # ---------------------------------------------------------- preferences
+    # You run Linux, so AMD's in-kernel/Mesa driver is worth real points:
+    # nothing to install, no DKMS rebuild on kernel updates, Wayland just
+    # works. Intel Arc is open too but the stack is less mature. NVIDIA is
+    # not penalised — it simply earns no bonus.
+    "brand_bonus": {"AMD": 8, "Intel": 3, "NVIDIA": 0},
+
+    # Cards you specifically want. They get a score bonus and are swept more
+    # deeply than the rest of the catalog.
+    "priority_models": ["rx6750xt", "rx7600xt"],
+    "priority_bonus": 6,
+    # Shortlisted cards get a little headroom over max_price, because a good
+    # RX 6750 XT locally starts around R$1800 and you asked to hear about
+    # those specifically. Set this equal to max_price to switch it off.
+    "priority_max_price": 1800,
 
     # ---------------------------------------------------------- how to fetch
     # Scope is Greater Goiânia + Anápolis. OLX's region filter gets us most of
@@ -32,7 +49,10 @@ DEFAULTS = {
     # No category filter: the local pool is small and plenty of cards get
     # posted outside "informatica/placas-de-video", so we cast wide and let
     # the title matcher decide.
-    "region_path": "estado-go/grande-goiania-e-anapolis",
+    # State-wide fetch, filtered locally by region.py. OLX's own
+    # "grande-goiania-e-anapolis" filter leaks distant cities *and* hides the
+    # nearby ring, so we do the geography ourselves.
+    "region_path": "estado-go",
     "category_path": "",
     "broad_pages": 6,           # pages of the newest-in-region sweep
     "targeted_pages": 1,        # pages per model query
@@ -80,6 +100,8 @@ def _coerce(default, raw: str):
         return float(raw)
     if isinstance(default, list):
         return [x.strip() for x in raw.split(",") if x.strip()]
+    if isinstance(default, dict):
+        return json.loads(raw)
     return raw
 
 

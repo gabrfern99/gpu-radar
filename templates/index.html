@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 </head>
 <body>
@@ -42,13 +42,16 @@
       </svg>
       <div>
         <h1>GPU RADAR</h1>
-        <p>OLX · Grande Goiânia + Anápolis · ≤ R$ {{ '{:,}'.format(cfg.max_price).replace(',', '.') }}</p>
+        <p>OLX · Grande Goiânia + Anápolis{% if cfg.include_nearby %} + ~120 km{% endif %}
+           · AMD-first · ≤ R$ {{ '{:,}'.format(cfg.max_price).replace(',', '.') }}</p>
       </div>
     </div>
 
     <div class="pills" id="pills">
       <div class="pill ok"><b id="st-budget">–</b> no orçamento</div>
       <div class="pill hot"><b id="st-steal">–</b> achados</div>
+      <div class="pill prio" title="RX 6750 XT / RX 7600 XT no orçamento">
+        <b id="st-prio">–</b> da sua lista</div>
       <div class="pill"><b id="st-live">–</b> anúncios</div>
       <div class="pill" id="st-run-pill" title="última varredura">
         <b id="st-run">–</b> última busca
@@ -128,6 +131,9 @@
         <button class="chip c-fair"  data-v="fair"   aria-pressed="false"><i class="swatch"></i>Razoável</button>
       </div>
       <div class="divider"></div>
+      <button class="chip c-prio" id="t-prio"   aria-pressed="false">★ Minha lista</button>
+      <button class="chip c-open" id="t-open"   aria-pressed="false">◆ Driver aberto</button>
+      <button class="chip" id="t-nearby"  aria-pressed="true">📍 Inclui ~120 km</button>
       <button class="chip" id="t-fresh"   aria-pressed="false">⚡ 24 h</button>
       <button class="chip" id="t-combos"  aria-pressed="false">🖥 PCs completos</button>
       <button class="chip" id="t-suspect" aria-pressed="false">⚠ Suspeitos</button>
@@ -200,6 +206,6 @@
     }
   };
 </script>
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ asset('app.js') }}"></script>
 </body>
 </html>

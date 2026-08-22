@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS listings (
     image           TEXT,
     location        TEXT,
     city            TEXT,
+    band            TEXT,
     state           TEXT,
     date_text       TEXT,
     posted_at       TEXT,
@@ -97,8 +98,37 @@ def connect() -> sqlite3.Connection:
 
 
 def init() -> None:
+    """Create the schema, then add any columns a newer version introduced.
+
+    CREATE TABLE IF NOT EXISTS silently keeps an old table shape, so adding a
+    column to SCHEMA above would otherwise mean dropping the database and
+    losing every learned price median. This backfills instead.
+    """
     with connect() as con:
         con.executescript(SCHEMA)
+        for table, spec in _column_specs():
+            have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+            for name, decl in spec:
+                if name not in have:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    print(f"[db] migrated: {table}.{name} added")
+
+
+def _column_specs():
+    """(table, [(column, type-decl)]) parsed out of SCHEMA itself."""
+    import re
+    for m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);",
+                         SCHEMA, re.S):
+        table, body = m.group(1), m.group(2)
+        cols = []
+        for line in body.splitlines():
+            line = line.strip().rstrip(",")
+            if not line or line.upper().startswith(("PRIMARY KEY", "UNIQUE", "FOREIGN KEY")):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2 and "PRIMARY KEY" not in parts[1].upper():
+                cols.append((parts[0], parts[1]))
+        yield table, cols
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:

@@ -13,7 +13,11 @@ Widen it without touching this file by adding "extra_cities" to config.json.
 import re
 import unicodedata
 
-OLX_REGION_PATH = "estado-go/grande-goiania-e-anapolis"
+# We fetch the whole state and filter locally. OLX's own
+# "grande-goiania-e-anapolis" filter both leaks distant cities *and* hides the
+# second ring below, so it is the wrong tool in both directions — doing the
+# geography ourselves is the only way to control the radius.
+OLX_REGION_PATH = "estado-go"
 
 # Região Metropolitana de Goiânia
 RM_GOIANIA = [
@@ -26,7 +30,20 @@ RM_GOIANIA = [
 
 ANAPOLIS = ["Anápolis"]
 
-ALLOWED = RM_GOIANIA + ANAPOLIS
+# Second ring: everything else within roughly 120 km of Goiânia. Worth a drive
+# for a real bargain, but not a casual trip — scored slightly lower for it.
+NEARBY = [
+    "Anicuns", "Avelinópolis", "Campestre de Goiás", "Cezarina", "Cromínia",
+    "Firminópolis", "Gameleira de Goiás", "Heitoraí", "Itaberaí", "Itaguari",
+    "Itaguaru", "Jaraguá", "Leopoldo de Bulhões", "Nazário", "Orizona",
+    "Ouro Verde de Goiás", "Palmeiras de Goiás", "Petrolina de Goiás",
+    "Piracanjuba", "Pirenópolis", "Pontalina", "Professor Jamil",
+    "Santa Bárbara de Goiás", "São Francisco de Goiás", "São Luís de Montes Belos",
+    "Silvânia", "Taquaral de Goiás", "Turvânia", "Uruana", "Varjão",
+    "Vianópolis",
+]
+
+ALLOWED = RM_GOIANIA + ANAPOLIS + NEARBY
 
 # Close enough to go see it after work and be home for dinner — this is a
 # small scoring nudge, not a filter.
@@ -44,23 +61,53 @@ def fold(s: str) -> str:
 _ALLOWED_FOLDED = {fold(c) for c in ALLOWED}
 _CLOSE_FOLDED = {fold(c) for c in CLOSE}
 _CANON = {fold(c): c for c in ALLOWED}
+_METRO_FOLDED = {fold(c) for c in RM_GOIANIA}
+_ANAPOLIS_FOLDED = {fold(c) for c in ANAPOLIS}
+_NEARBY_FOLDED = {fold(c) for c in NEARBY}
 
 
-def city_of(location: str) -> str | None:
+def city_of(location: str, extra: list[str] | None = None) -> str | None:
     """
     OLX renders locations as "City, Neighborhood" or just "City".
     Returns the canonical city name when it is one we cover, else None.
     """
     if not location:
         return None
-    return _CANON.get(fold(location.split(",")[0]))
+    head = location.split(",")[0].strip()
+    canon = _CANON.get(fold(head))
+    if canon:
+        return canon
+    # a city added via config.extra_cities keeps whatever spelling OLX used
+    if extra and fold(head) in {fold(c) for c in extra}:
+        return head
+    return None
 
 
-def in_region(location: str, extra: list[str] | None = None) -> bool:
+def band_of(location_or_city: str) -> str | None:
+    """
+    How far out a listing is: "metro" (RM Goiânia), "anapolis", or "nearby"
+    (the ~120 km second ring). None means outside everything we cover.
+    """
+    if not location_or_city:
+        return None
+    head = fold(location_or_city.split(",")[0])
+    if head in _METRO_FOLDED:
+        return "metro"
+    if head in _ANAPOLIS_FOLDED:
+        return "anapolis"
+    if head in _NEARBY_FOLDED:
+        return "nearby"
+    return None
+
+
+def in_region(location: str, extra: list[str] | None = None,
+              include_nearby: bool = True) -> bool:
     if not location:
         return False
     head = fold(location.split(",")[0])
-    if head in _ALLOWED_FOLDED:
+    if head in _METRO_FOLDED or head in _ANAPOLIS_FOLDED:
+        return True
+    if include_nearby and head in _NEARBY_FOLDED:
         return True
     return head in {fold(c) for c in (extra or [])}
 

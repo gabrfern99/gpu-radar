@@ -122,6 +122,20 @@ MODELS = [
          pats=[r"\barc\s*a\s*750\b", r"\ba750\b"]),
 ]
 
+# On Linux the driver story is a real part of the buying decision, so carry it
+# in the catalog rather than leaving it implicit.
+LINUX_DRIVER = {
+    "AMD":    {"stack": "amdgpu + Mesa", "open": True,
+               "note": "in-kernel driver, nothing to install, Wayland fine"},
+    "Intel":  {"stack": "Xe/i915 + Mesa", "open": True,
+               "note": "open stack, less mature; older titles can be rough"},
+    "NVIDIA": {"stack": "nvidia proprietary", "open": False,
+               "note": "out-of-tree module, DKMS rebuild on kernel updates"},
+}
+
+for _m in MODELS:
+    _m["linux"] = LINUX_DRIVER[_m["brand"]]
+
 BY_KEY = {m["key"]: m for m in MODELS}
 
 # Compiled in catalog order, so within one starting position the longer
@@ -140,13 +154,24 @@ _NUMBERED = [
 # Search terms sent to OLX. Deliberately coarse: OLX fuzzy-matches, so
 # "rx 6600" also surfaces 6600 XT / 6650 XT listings, and the title matcher
 # above sorts out what each result actually is.
+# Broad sweeps, newest-first. The AMD-specific ones are deliberately generic
+# so oddly-titled Radeon ads still surface.
+BROAD_QUERIES = ["placa de video", "placa de video gamer"]
+AMD_QUERIES = ["radeon", "placa de video amd", "placa de video radeon"]
+
+# Cards worth searching harder for (see config.priority_models).
+PRIORITY_QUERIES = ["rx 6750 xt", "rx 7600 xt"]
+
 QUERIES = [
+    # --- AMD first: the open amdgpu/Mesa stack is the reason to prefer them.
     "rx 6750", "rx 6700", "rx 6650", "rx 6600", "rx 7600", "rx 7700 xt",
-    "rx 6800", "rx 5700", "rx 5600 xt", "rx 6500 xt", "rx 590", "rx 580",
-    "rx vega", "rx 9060",
+    "rx 6800", "rx 9060", "rx 5700", "rx 5600 xt", "rx 6500 xt",
+    "rx 590", "rx 580", "rx vega",
+    # --- Intel Arc: also open-source drivers.
+    "arc a750", "arc a770", "arc b580",
+    # --- NVIDIA: proprietary driver, still worth watching for a real steal.
     "rtx 3070", "rtx 3060", "rtx 3050", "rtx 2080", "rtx 2070", "rtx 2060",
     "rtx 4060", "rtx 5060", "gtx 1080", "gtx 1070", "gtx 1660", "gtx 1650 super",
-    "arc a750", "arc a770", "arc b580",
 ]
 
 # ---------------------------------------------------------------------------

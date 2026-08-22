@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 
 import db
 import gpus
+import imgcache
 import notify
 import region
 from config import CFG
@@ -259,10 +260,21 @@ def score(rec: dict, ref: int, now_utc: datetime) -> dict:
     s = 100 * (0.40 * price_c + 0.28 * power_c + 0.17 * value_c + 0.15 * recency_c)
 
     # nudges
+    # You run Linux: AMD's in-kernel amdgpu/Mesa driver is worth real points,
+    # Intel Arc's open stack a little, and NVIDIA simply earns none.
+    s += CFG["brand_bonus"].get(rec.get("brand", ""), 0)
+
+    if rec.get("model_key") in CFG["priority_models"]:
+        s += CFG["priority_bonus"]                 # a card you actually want
+
+    band = rec.get("band")
     if rec.get("city") == CFG["home_city"]:
         s += 3                                     # in your own city, go see it today
     elif region.is_close(rec.get("city")):
         s += 1.5                                   # short drive
+    elif band == "nearby":
+        s -= 2                                     # ~120 km out; worth it only
+                                                   # for a real bargain
     fl = rec.get("flags", [])
     if "warranty" in fl or "invoice" in fl:
         s += 2
@@ -317,10 +329,24 @@ def plan() -> list[tuple[str, int]]:
     per model family to catch oddly-titled ads."""
     jobs = [("placa de video", p) for p in range(1, CFG["broad_pages"] + 1)]
     jobs += [("placa de video gamer", p) for p in range(1, 3)]
+
+    # AMD gets extra breadth — it is the stack you actually want on Linux.
+    for q in gpus.AMD_QUERIES:
+        jobs += [(q, p) for p in range(1, 3)]
+
+    # The cards on your shortlist get paged deeper than the rest.
+    for q in gpus.PRIORITY_QUERIES:
+        jobs += [(q, p) for p in range(1, 3)]
+
     for q in gpus.QUERIES:
-        for p in range(1, CFG["targeted_pages"] + 1):
-            jobs.append((q, p))
-    return jobs
+        jobs += [(q, p) for p in range(1, CFG["targeted_pages"] + 1)]
+
+    # de-dupe while keeping order
+    seen, out = set(), []
+    for j in jobs:
+        if j not in seen:
+            seen.add(j); out.append(j)
+    return out
 
 
 def sweep(verbose=True) -> dict:
@@ -362,8 +388,10 @@ def sweep(verbose=True) -> dict:
     for c in cards.values():
         # OLX pads regional results with far-off cities, so gate on the
         # allowlist before doing any further work.
-        c["city"] = region.city_of(c["location"])
-        if CFG["strict_region"] and not region.in_region(c["location"], CFG["extra_cities"]):
+        c["city"] = region.city_of(c["location"], CFG["extra_cities"])
+        c["band"] = region.band_of(c["location"]) or ("extra" if c["city"] else None)
+        if CFG["strict_region"] and not region.in_region(
+                c["location"], CFG["extra_cities"], CFG["include_nearby"]):
             out_of_region += 1
             continue
         model, kind, flags = gpus.analyze(c["title"])
@@ -380,69 +408,77 @@ def sweep(verbose=True) -> dict:
             timespec="seconds") if c["_posted_dt"] else None
         keep.append(c)
 
-    log(f"{out_of_region} listings dropped as outside Greater Goiânia + Anápolis")
+    log(f"{out_of_region} listings dropped as outside the covered region")
     log(f"{len(keep)} listings matched the GPU catalog")
 
     # ---- store ----------------------------------------------------------
+    #
+    # Two passes on purpose. The market reference for a model is the median of
+    # what we have seen, so it has to be computed *after* this sweep's rows
+    # land — otherwise a fresh database scores everything against the stale
+    # catalog priors and the first run's alerts are meaningless.
     stats = {"new": 0, "price_drops": 0, "alerted": 0}
     to_alert = []
     with db.connect() as con:
-        refs = reference_prices(con)
         existing = {r["id"]: db.row_to_dict(r) for r in con.execute(
-            "SELECT id, price, alerted, first_seen, seen_count, price_drops, initial_price "
-            "FROM listings")}
+            "SELECT id, price, alerted, price_drops FROM listings")}
 
+        # pass 1 — upsert the raw facts
         for c in keep:
-            ref, ref_src = refs[c["model_key"]]
             prev = existing.get(c["id"])
             c["price_drops"] = prev["price_drops"] if prev else 0
-            dropped = bool(prev and prev["price"] and c["price"] < prev["price"])
-            if dropped:
+            c["_dropped"] = bool(prev and prev["price"] and c["price"] < prev["price"])
+            if c["_dropped"]:
                 c["price_drops"] += 1
                 stats["price_drops"] += 1
-
-            c["suspect"] = int(is_suspect(c["price"], ref, c["flags"]))
-            c.update(score(c, ref, now_utc))
-            c["ref_source"] = ref_src
-
-            is_new = prev is None
-            if is_new:
+            c["_is_new"] = prev is None
+            if c["_is_new"]:
                 stats["new"] += 1
 
             con.execute("""
-                INSERT INTO listings (id,url,title,price,image,location,city,state,date_text,
+                INSERT INTO listings (id,url,title,price,image,location,city,band,state,date_text,
                     posted_at,model_key,model_name,brand,vram,perf,kind,flags,
-                    reference_price,ref_source,discount,perf_per_1k,deal_score,deal_class,
-                    suspect,first_seen,last_seen,seen_count,price_drops,initial_price,
+                    first_seen,last_seen,seen_count,price_drops,initial_price,
                     gone,alerted,via_query)
-                VALUES (:id,:url,:title,:price,:image,:location,:city,:state,:date_text,
+                VALUES (:id,:url,:title,:price,:image,:location,:city,:band,:state,:date_text,
                     :posted_at,:model_key,:model_name,:brand,:vram,:perf,:kind,:flags,
-                    :reference_price,:ref_source,:discount,:perf_per_1k,:deal_score,:deal_class,
-                    :suspect,:ts,:ts,1,:price_drops,:price,0,0,:via_query)
+                    :ts,:ts,1,:price_drops,:price,0,0,:via_query)
                 ON CONFLICT(id) DO UPDATE SET
                     price=excluded.price, title=excluded.title, url=excluded.url,
                     image=COALESCE(excluded.image, listings.image),
-                    location=excluded.location, city=excluded.city, state=excluded.state,
+                    location=excluded.location, city=excluded.city,
+                    band=excluded.band, state=excluded.state,
                     date_text=excluded.date_text, posted_at=excluded.posted_at,
-                    reference_price=excluded.reference_price, ref_source=excluded.ref_source,
-                    discount=excluded.discount, perf_per_1k=excluded.perf_per_1k,
-                    deal_score=excluded.deal_score, deal_class=excluded.deal_class,
-                    suspect=excluded.suspect, flags=excluded.flags, kind=excluded.kind,
+                    flags=excluded.flags, kind=excluded.kind,
+                    model_key=excluded.model_key, model_name=excluded.model_name,
+                    brand=excluded.brand, vram=excluded.vram, perf=excluded.perf,
                     last_seen=excluded.last_seen, seen_count=listings.seen_count+1,
                     price_drops=excluded.price_drops, gone=0
             """, {**c, "flags": json.dumps(c["flags"]), "ts": started})
 
-            if is_new or dropped:
+            if c["_is_new"] or c["_dropped"]:
                 con.execute("INSERT INTO price_history (listing_id,price,ts) VALUES (?,?,?)",
                             (c["id"], c["price"], started))
 
-            already = prev["alerted"] if prev else 0
-            if not already and wants_alert(c):
-                # Alerting is deduped by the `alerted` flag rather than by
-                # newness, so a bargain that was already posted when the radar
-                # first saw it still reaches you — exactly once.
-                c["_reason"] = ("price drop" if dropped
-                                else "new listing" if is_new
+        # pass 2 — now that the rows are in, the medians are current
+        refs = reference_prices(con)
+        for c in keep:
+            ref, ref_src = refs[c["model_key"]]
+            c["suspect"] = int(is_suspect(c["price"], ref, c["flags"]))
+            c.update(score(c, ref, now_utc))
+            c["ref_source"] = ref_src
+            con.execute("""UPDATE listings SET reference_price=?, ref_source=?, discount=?,
+                           perf_per_1k=?, deal_score=?, deal_class=?, suspect=? WHERE id=?""",
+                        (c["reference_price"], ref_src, c["discount"], c["perf_per_1k"],
+                         c["deal_score"], c["deal_class"], c["suspect"], c["id"]))
+
+            prev = existing.get(c["id"])
+            if not (prev["alerted"] if prev else 0) and wants_alert(c):
+                # Deduped by the `alerted` flag rather than by newness, so a
+                # bargain that was already posted when the radar first saw it
+                # still reaches you — exactly once.
+                c["_reason"] = ("price drop" if c["_dropped"]
+                                else "new listing" if c["_is_new"]
                                 else "standing bargain")
                 to_alert.append(c)
 
@@ -451,6 +487,13 @@ def sweep(verbose=True) -> dict:
         pruned = db.prune(con, CFG["stale_days"])
         if pruned:
             log(f"pruned {pruned} stale listings")
+
+    # ---- photos ---------------------------------------------------------
+    # Pull the thumbnails now so the dashboard paints them from disk instead
+    # of waiting on a round trip to OLX for each card on first view.
+    got, missed = imgcache.warm(c.get("image") for c in keep)
+    if got or missed:
+        log(f"cached {got} new photos" + (f", {missed} failed" if missed else ""))
 
     # ---- alert ----------------------------------------------------------
     to_alert.sort(key=lambda c: -c["deal_score"])
@@ -473,7 +516,10 @@ def sweep(verbose=True) -> dict:
 
 
 def wants_alert(c: dict) -> bool:
-    if c["price"] > CFG["max_price"] or c["price"] < CFG["min_price"]:
+    ceiling = CFG["max_price"]
+    if c.get("model_key") in CFG["priority_models"]:
+        ceiling = max(ceiling, CFG["priority_max_price"])
+    if c["price"] > ceiling or c["price"] < CFG["min_price"]:
         return False
     if c["deal_score"] < CFG["alert_min_score"]:
         return False
@@ -515,6 +561,8 @@ def _rescore_once() -> int:
             # classifier take effect without hitting OLX again.
             _m, kind, flags = gpus.analyze(rec["title"])
             rec["kind"], rec["flags"], rec["perf"] = kind, flags, model["perf"]
+            rec["brand"], rec["model_key"] = model["brand"], model["key"]
+            rec["band"] = region.band_of(rec.get("city") or rec.get("location") or "")
             rec["_posted_dt"] = (datetime.fromisoformat(rec["posted_at"])
                                  if rec["posted_at"] else None)
             ref, src = refs[model["key"]]
@@ -522,12 +570,13 @@ def _rescore_once() -> int:
             s = score(rec, ref, now_utc)
             con.execute("""UPDATE listings SET reference_price=?, ref_source=?, discount=?,
                            perf_per_1k=?, deal_score=?, deal_class=?, suspect=?,
-                           model_name=?, brand=?, vram=?, perf=?, kind=?, flags=?
+                           model_name=?, brand=?, vram=?, perf=?, kind=?, flags=?,
+                           band=COALESCE(?, band)
                            WHERE id=?""",
                         (s["reference_price"], src, s["discount"], s["perf_per_1k"],
                          s["deal_score"], s["deal_class"], rec["suspect"],
                          model["name"], model["brand"], model["vram"], model["perf"],
-                         kind, json.dumps(flags), rec["id"]))
+                         kind, json.dumps(flags), rec["band"], rec["id"]))
             n += 1
     return n
 

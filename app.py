@@ -9,22 +9,52 @@ page is always showing whatever the last sweep found.
 """
 
 import json
-import subprocess
-import sys
+import mimetypes
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, url_for
 
 import db
 import gpus
+import imgcache
 import notify
 import region
 from config import CFG, ROOT
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
+
+# Flask caches static files for 12 hours by default, which meant an edited
+# app.js kept serving stale from the browser. Never cache them; the templates
+# cache-bust with ?v=<mtime> anyway.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+@app.template_global()
+def asset(filename: str) -> str:
+    """static URL with a ?v=<mtime> cache-buster, so edits always land."""
+    path = Path(app.static_folder) / filename
+    v = int(path.stat().st_mtime) if path.exists() else 0
+    return url_for("static", filename=filename, v=v)
+
+
+@app.get("/img/<path:p>")
+def img_proxy(p):
+    """
+    Serve OLX listing photos from the local cache, fetching on miss.
+
+    See imgcache.py for why this exists: OLX 403s hotlinked images, so the
+    browser can never load them directly.
+    """
+    cached = imgcache.fetch(p)
+    if cached is None:
+        return "unavailable", 502
+    resp = Response(cached.read_bytes(),
+                    mimetype=mimetypes.guess_type(p)[0] or "image/webp")
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
+
 
 _scrape_lock = threading.Lock()
 _scrape_state = {"running": False, "started": None, "result": None, "error": None}
@@ -35,11 +65,11 @@ _scrape_state = {"running": False, "started": None, "result": None, "error": Non
 # ---------------------------------------------------------------------------
 
 SORTS = {
-    "score":  "deal_score DESC, last_seen DESC",
-    "recent": "COALESCE(posted_at, first_seen) DESC",
-    "cheap":  "price ASC",
-    "power":  "perf DESC, deal_score DESC",
-    "value":  "perf_per_1k DESC",
+    "score":    "deal_score DESC, last_seen DESC",
+    "recent":   "COALESCE(posted_at, first_seen) DESC",
+    "cheap":    "price ASC",
+    "power":    "perf DESC, deal_score DESC",
+    "value":    "perf_per_1k DESC",
     "discount": "discount DESC",
 }
 
@@ -61,7 +91,14 @@ def decorate(row: dict) -> dict:
     row["age_hours"] = _iso_age_hours(row)
     row["is_local"] = (row.get("city") == CFG["home_city"])
     row["is_close"] = region.is_close(row.get("city"))
-    row["in_budget"] = bool(row.get("price") and row["price"] <= CFG["max_price"])
+    row["priority"] = row.get("model_key") in CFG["priority_models"]
+    row["linux"] = gpus.LINUX_DRIVER.get(row.get("brand") or "")
+    # Shortlisted cards are allowed a higher ceiling than the general budget.
+    ceiling = CFG["max_price"]
+    if row["priority"]:
+        ceiling = max(ceiling, CFG["priority_max_price"])
+    row["in_budget"] = bool(row.get("price") and row["price"] <= ceiling)
+    row["ceiling"] = ceiling
     row["saving"] = ((row["reference_price"] - row["price"])
                      if row.get("reference_price") and row.get("price") else None)
     return row
@@ -107,6 +144,7 @@ def fetch_listings(args) -> list[dict]:
     brand = get("brand") or ""
     model = get("model") or ""
     city  = get("city") or ""
+    band  = get("band") or ""
     klass = get("class") or ""
     sort  = SORTS.get(get("sort") or "score", SORTS["score"])
     limit = min(num("limit") or 300, 1000)
@@ -132,6 +170,10 @@ def fetch_listings(args) -> list[dict]:
         where.append("model_key = ?"); params.append(model)
     if city:
         where.append("city = ?"); params.append(city)
+    if band:
+        parts = band.split(",")
+        where.append("band IN (%s)" % ",".join("?" * len(parts)))
+        params += parts
     if klass:
         parts = klass.split(",")
         where.append("deal_class IN (%s)" % ",".join("?" * len(parts)))
@@ -165,7 +207,7 @@ def api_listing(lid):
         item["history"] = [dict(r) for r in con.execute(
             "SELECT price, ts FROM price_history WHERE listing_id=? ORDER BY ts", (lid,))]
         peers = [dict(r) for r in con.execute(
-            "SELECT id,title,price,url,deal_score,city,location,posted_at FROM listings "
+            "SELECT id,title,price,url,deal_score,city,band,location,posted_at FROM listings "
             "WHERE model_key=? AND id<>? AND gone=0 AND price IS NOT NULL "
             "ORDER BY price ASC LIMIT 8", (item["model_key"], lid))]
         stats = con.execute(
@@ -186,6 +228,15 @@ def api_stats():
         in_budget = con.execute(
             f"SELECT COUNT(*) {base} AND kind='gpu' AND suspect=0 AND price<=?",
             (CFG["max_price"],)).fetchone()[0]
+        # shortlisted cards count against their own, higher ceiling
+        if CFG["priority_models"]:
+            qs = ",".join("?" * len(CFG["priority_models"]))
+            n_priority = con.execute(
+                f"SELECT COUNT(*) {base} AND kind='gpu' AND suspect=0 AND price<=? "
+                f"AND model_key IN ({qs})",
+                (CFG["priority_max_price"], *CFG["priority_models"])).fetchone()[0]
+        else:
+            n_priority = 0
         by_class = {r[0]: r[1] for r in con.execute(
             f"SELECT deal_class, COUNT(*) {base} AND kind='gpu' AND suspect=0 "
             f"GROUP BY deal_class")}
@@ -193,6 +244,8 @@ def api_stats():
             f"SELECT brand, COUNT(*) {base} GROUP BY brand")}
         cities = [{"city": r[0], "n": r[1]} for r in con.execute(
             f"SELECT city, COUNT(*) c {base} GROUP BY city ORDER BY c DESC") if r[0]]
+        bands = {r[0]: r[1] for r in con.execute(
+            f"SELECT band, COUNT(*) {base} GROUP BY band") if r[0]}
         best = con.execute(
             f"SELECT * {base} AND kind='gpu' AND suspect=0 AND price<=? "
             f"ORDER BY deal_score DESC LIMIT 1", (CFG["max_price"],)).fetchone()
@@ -207,12 +260,23 @@ def api_stats():
     return jsonify({
         "total": tot, "live": live, "in_budget": in_budget,
         "by_class": by_class, "by_brand": by_brand, "cities": cities,
+        "bands": bands, "priority_count": n_priority,
         "best": decorate(db.row_to_dict(best)) if best else None,
         "last_run": dict(last_run) if last_run else None,
         "alerts": n_alerts, "models": models,
-        "budget": CFG["max_price"], "home_city": CFG["home_city"],
-        "region": {"cities": region.ALLOWED, "label": "Grande Goiânia + Anápolis"},
+        "budget": CFG["max_price"], "priority_budget": CFG["priority_max_price"],
+        "home_city": CFG["home_city"],
+        "region": {"metro": region.RM_GOIANIA, "anapolis": region.ANAPOLIS,
+                   "nearby": region.NEARBY if CFG["include_nearby"] else [],
+                   "label": "Grande Goiânia + Anápolis"
+                            + (" + ~120 km" if CFG["include_nearby"] else "")},
+        "priority_models": [
+            {"key": k, "name": gpus.BY_KEY[k]["name"]}
+            for k in CFG["priority_models"] if k in gpus.BY_KEY],
+        "brand_bonus": CFG["brand_bonus"],
+        "linux_drivers": gpus.LINUX_DRIVER,
         "scrape": {k: v for k, v in _scrape_state.items() if k != "result"},
+        "imgcache": imgcache.stats(),
     })
 
 
