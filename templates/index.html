@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Radar · Grande Goiânia + Anápolis</title>
+<meta name="description" content="Radar de placas de vídeo na OLX — Grande Goiânia e Anápolis, até R$ {{ cfg.max_price }}.">
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+</head>
+<body>
+
+<div class="aurora" aria-hidden="true">
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+</div>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="wrap">
+
+  <!-- ================================================== topbar ========== -->
+  <header class="topbar">
+    <div class="brand">
+      <svg class="dish" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+        <circle cx="22" cy="22" r="19" stroke="rgba(255,255,255,.12)"/>
+        <circle cx="22" cy="22" r="12.5" stroke="rgba(255,255,255,.1)"/>
+        <circle cx="22" cy="22" r="6" stroke="rgba(255,255,255,.08)"/>
+        <g class="sweep-line">
+          <path d="M22 22 L22 3 A19 19 0 0 1 38 13 Z" fill="url(#sw)"/>
+        </g>
+        <circle cx="22" cy="22" r="2.6" fill="#8b5cf6"/>
+        <defs><linearGradient id="sw" x1="22" y1="22" x2="34" y2="8">
+          <stop stop-color="#8b5cf6" stop-opacity=".55"/>
+          <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+        </linearGradient></defs>
+      </svg>
+      <div>
+        <h1>GPU RADAR</h1>
+        <p>OLX · Grande Goiânia + Anápolis · ≤ R$ {{ '{:,}'.format(cfg.max_price).replace(',', '.') }}</p>
+      </div>
+    </div>
+
+    <div class="pills" id="pills">
+      <div class="pill ok"><b id="st-budget">–</b> no orçamento</div>
+      <div class="pill hot"><b id="st-steal">–</b> achados</div>
+      <div class="pill"><b id="st-live">–</b> anúncios</div>
+      <div class="pill" id="st-run-pill" title="última varredura">
+        <b id="st-run">–</b> última busca
+      </div>
+    </div>
+
+    <button class="btn icon" id="btn-alerts" title="Histórico de alertas (a)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>
+      </svg>
+      <span class="badge-count" id="alert-count" hidden>0</span>
+    </button>
+    <button class="btn" id="btn-test" title="Enviar um alerta de teste agora">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="m22 2-7 20-4-9-9-4Z"/>
+      </svg> Testar alerta
+    </button>
+    <button class="btn primary" id="btn-scrape" title="Varrer a OLX agora (r)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="scrape-ico">
+        <path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M21 3v6h-6"/>
+      </svg> <span id="scrape-label">Varrer agora</span>
+    </button>
+  </header>
+
+  <!-- ================================================== hero ============ -->
+  <section id="hero" class="hero empty">carregando o melhor achado…</section>
+
+  <!-- ================================================== controls ======== -->
+  <section class="controls">
+    <div class="row">
+      <label class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input id="q" type="search" placeholder="Buscar por modelo, título ou bairro…" autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+
+      <div class="seg" id="brand" role="group" aria-label="Fabricante">
+        <button data-v="" aria-pressed="true">Todas</button>
+        <button data-v="AMD" aria-pressed="false">AMD</button>
+        <button data-v="NVIDIA" aria-pressed="false">NVIDIA</button>
+        <button data-v="Intel" aria-pressed="false">Intel</button>
+      </div>
+
+      <select id="sort" aria-label="Ordenar">
+        <option value="score">★ Melhor negócio</option>
+        <option value="recent">Mais recentes</option>
+        <option value="cheap">Menor preço</option>
+        <option value="power">Mais potente</option>
+        <option value="value">Melhor desempenho por real</option>
+        <option value="discount">Maior desconto</option>
+      </select>
+
+      <select id="city" aria-label="Cidade"><option value="">Toda a região</option></select>
+      <span class="spacer"></span>
+      <span class="count" id="count">–</span>
+    </div>
+
+    <div class="row">
+      <div class="slider">
+        <span>até</span>
+        <input id="pmax" type="range" min="200" max="4000" step="50" value="{{ cfg.max_price }}">
+        <output id="pmax-out">R$ {{ cfg.max_price }}</output>
+      </div>
+      <div class="divider"></div>
+      <div class="slider">
+        <span>força mín.</span>
+        <input id="perfmin" type="range" min="40" max="120" step="5" value="40">
+        <output id="perfmin-out">tier 40</output>
+      </div>
+      <div class="divider"></div>
+      <div class="row" id="classes" style="gap:7px">
+        <button class="chip c-steal" data-v="steal"  aria-pressed="false"><i class="swatch"></i>Achado</button>
+        <button class="chip c-great" data-v="great"  aria-pressed="false"><i class="swatch"></i>Ótimo</button>
+        <button class="chip c-good"  data-v="good"   aria-pressed="false"><i class="swatch"></i>Bom</button>
+        <button class="chip c-fair"  data-v="fair"   aria-pressed="false"><i class="swatch"></i>Razoável</button>
+      </div>
+      <div class="divider"></div>
+      <button class="chip" id="t-fresh"   aria-pressed="false">⚡ 24 h</button>
+      <button class="chip" id="t-combos"  aria-pressed="false">🖥 PCs completos</button>
+      <button class="chip" id="t-suspect" aria-pressed="false">⚠ Suspeitos</button>
+      <button class="chip" id="t-gone"    aria-pressed="false">🕳 Encerrados</button>
+    </div>
+  </section>
+
+  <!-- ================================================== grid ============ -->
+  <main class="grid" id="grid" aria-live="polite"></main>
+
+  <!-- ================================================== panels ========== -->
+  <details class="panel" id="panel-models">
+    <summary>📊 Preço de mercado por modelo <span class="count" style="margin-left:6px" id="models-n"></span></summary>
+    <div class="panel-in"><table id="models-tbl">
+      <thead><tr>
+        <th>Modelo</th><th>Fab.</th><th class="n">VRAM</th><th class="n">Tier</th>
+        <th class="n">Anúncios</th><th class="n">Mín</th><th class="n">Médio</th>
+        <th class="n">Máx</th><th class="n">Referência</th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+  </details>
+
+  <details class="panel" id="panel-alerts">
+    <summary>🔔 Alertas enviados</summary>
+    <div class="panel-in"><table id="alerts-tbl">
+      <thead><tr><th>Quando</th><th>Anúncio</th><th class="n">Preço</th>
+                 <th class="n">Nota</th><th>Motivo</th><th>Canais</th></tr></thead>
+      <tbody></tbody></table></div>
+  </details>
+
+  <details class="panel" id="panel-runs">
+    <summary>⚙️ Varreduras e configuração</summary>
+    <div class="panel-in">
+      <p style="color:var(--ink-2);font-size:13px;max-width:70ch;line-height:1.65">
+        Os alertas vão para o app <b>ntfy</b>. Instale o ntfy no celular, toque em
+        <b>+</b> e inscreva-se no tópico
+        <code class="topic" id="topic" title="clique para copiar">{{ cfg.ntfy_topic }}</code>
+        — ou abra <a href="{{ subscribe }}" target="_blank" rel="noopener"
+        style="color:var(--violet-2)">{{ subscribe }}</a> no navegador.
+        Esse tópico é a sua senha: quem souber dele recebe os seus alertas.
+      </p>
+      <table id="runs-tbl">
+        <thead><tr><th>Início</th><th class="n">Reqs</th><th class="n">Erros</th>
+                   <th class="n">Cards</th><th class="n">No catálogo</th>
+                   <th class="n">Novos</th><th class="n">Baixas</th><th class="n">Alertas</th></tr></thead>
+        <tbody></tbody></table>
+    </div>
+  </details>
+
+</div>
+
+<!-- ==================================================== drawer ========== -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Detalhes do anúncio"></aside>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+  window.RADAR = {
+    budget: {{ cfg.max_price }},
+    minPrice: {{ cfg.min_price }},
+    alertMin: {{ cfg.alert_min_score }},
+    homeCity: {{ cfg.home_city | tojson }},
+    subscribe: {{ subscribe | tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

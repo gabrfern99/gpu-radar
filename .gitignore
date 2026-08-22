@@ -1,0 +1,14 @@
+# Holds your private ntfy topic and any tokens — never commit it.
+config.json
+
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
