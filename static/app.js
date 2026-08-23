@@ -158,6 +158,8 @@ function renderStats() {
     sel.value = state.city;
   }
 
+  syncPills();
+
   const running = stats.scrape?.running;
   $("#btn-scrape").disabled = !!running;
   $("#scrape-label").textContent = running ? "Varrendo…" : "Varrer agora";
@@ -547,7 +549,67 @@ function notifyBrowser(x) {
 const debounce = (fn, ms = 260) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 const refresh = () => { writeHash(); load({ announce: false }); };
 
+/* The header counters double as filters. Each one sets the state that its
+   number describes, and clicking an active pill clears it again. */
+const PILL_STATE = {
+  budget: { pmax: window.RADAR.budget, classes: [], prio: false, q: "", brand: "", city: "" },
+  steal:  { classes: ["steal", "great"] },
+  prio:   { prio: true },
+  all:    { pmax: 4000, classes: [], prio: false, q: "", brand: "", city: "",
+            perfmin: 40, fresh: false },
+};
+
+function pillActive(kind) {
+  if (kind === "steal")  return state.classes.length === 2 &&
+                                state.classes.every(c => ["steal", "great"].includes(c));
+  if (kind === "prio")   return state.prio;
+  if (kind === "all")    return state.pmax > window.RADAR.budget;
+  if (kind === "budget") return state.pmax === window.RADAR.budget && !state.prio &&
+                                !state.classes.length && !state.q && !state.brand && !state.city;
+  return false;
+}
+
+function syncPills() {
+  $$("#pills .pill[data-pill]").forEach(b => {
+    const k = b.dataset.pill;
+    if (k === "runs") return;
+    b.setAttribute("aria-pressed", String(pillActive(k)));
+  });
+}
+
+function bindPills() {
+  $$("#pills .pill[data-pill]").forEach(b => {
+    const kind = b.dataset.pill;
+    b.addEventListener("click", () => {
+      if (kind === "runs") {
+        const p = $("#panel-runs");
+        p.open = true; p.scrollIntoView({ block: "center" });
+        return;
+      }
+      if (pillActive(kind) && kind !== "budget") {
+        Object.assign(state, { classes: [], prio: false });   // toggle off
+      } else {
+        Object.assign(state, PILL_STATE[kind]);
+      }
+      // keep the visible controls in step with what the pill just did
+      $("#q").value = state.q;
+      $("#pmax").value = state.pmax;
+      $("#pmax-out").textContent = brl(state.pmax);
+      $("#perfmin").value = state.perfmin;
+      $("#perfmin-out").textContent = "tier " + state.perfmin;
+      $("#city").value = state.city;
+      $$("#brand button").forEach(o =>
+        o.setAttribute("aria-pressed", String(o.dataset.v === state.brand)));
+      $$("#classes .chip").forEach(c =>
+        c.setAttribute("aria-pressed", String(state.classes.includes(c.dataset.v))));
+      $("#t-prio").setAttribute("aria-pressed", String(state.prio));
+      refresh();
+    });
+  });
+}
+
 function bind() {
+  bindPills();
   $("#q").value = state.q;
   $("#q").addEventListener("input", debounce(e => { state.q = e.target.value.trim(); refresh(); }));
 

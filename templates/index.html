@@ -48,14 +48,20 @@
     </div>
 
     <div class="pills" id="pills">
-      <div class="pill ok"><b id="st-budget">–</b> no orçamento</div>
-      <div class="pill hot"><b id="st-steal">–</b> achados</div>
-      <div class="pill prio" title="RX 6750 XT / RX 7600 XT no orçamento">
-        <b id="st-prio">–</b> da sua lista</div>
-      <div class="pill"><b id="st-live">–</b> anúncios</div>
-      <div class="pill" id="st-run-pill" title="última varredura">
-        <b id="st-run">–</b> última busca
-      </div>
+      <button class="pill ok" data-pill="budget" aria-pressed="false"
+              title="Mostrar tudo dentro do orçamento (limpa os outros filtros)">
+        <b id="st-budget">–</b> no orçamento</button>
+      <button class="pill hot" data-pill="steal" aria-pressed="false"
+              title="Só os achados e ótimos negócios">
+        <b id="st-steal">–</b> achados</button>
+      <button class="pill prio" data-pill="prio" aria-pressed="false"
+              title="Só RX 6750 XT / RX 7600 XT">
+        <b id="st-prio">–</b> da sua lista</button>
+      <button class="pill" data-pill="all" aria-pressed="false"
+              title="Mostrar todos os anúncios, sem limite de preço">
+        <b id="st-live">–</b> anúncios</button>
+      <button class="pill" data-pill="runs" id="st-run-pill" title="Ver as varreduras">
+        <b id="st-run">–</b> última busca</button>
     </div>
 
     <button class="btn icon" id="btn-alerts" title="Histórico de alertas (a)">

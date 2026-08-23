@@ -112,7 +112,7 @@ body {
 .pills::-webkit-scrollbar { display: none; }
 .pill {
   display: flex; align-items: baseline; gap: 6px; flex: none;
-  padding: 6px 11px; border-radius: 999px;
+  padding: 6px 11px; border-radius: 999px; font-family: inherit;
   background: var(--panel); border: 1px solid var(--stroke);
   font-size: 10.5px; color: var(--ink-2); white-space: nowrap;
 }
@@ -120,6 +120,15 @@ body {
 .pill.hot b { color: var(--steal); }
 .pill.ok  b { color: var(--good); }
 .pill.prio b { color: var(--amber); }
+
+/* The counters double as filters — clicking one narrows the grid to it. */
+.pill[data-pill] { cursor: pointer; transition: border-color .18s, background .18s, transform .18s var(--ease); }
+.pill[data-pill]:hover { border-color: var(--stroke-2); background: var(--panel-2); transform: translateY(-1px); }
+.pill[data-pill]:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+.pill[aria-pressed="true"] { border-color: currentColor; background: rgba(139, 92, 246, 0.14); }
+.pill.ok[aria-pressed="true"]   { background: rgba(52, 211, 153, 0.14); border-color: var(--good); }
+.pill.hot[aria-pressed="true"]  { background: rgba(255, 77, 109, 0.14); border-color: var(--steal); }
+.pill.prio[aria-pressed="true"] { background: rgba(251, 191, 36, 0.14); border-color: var(--amber); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
