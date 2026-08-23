@@ -315,6 +315,7 @@ select:focus { border-color: var(--violet); }
 .tag.combo { background: rgba(96, 165, 250, 0.9); border-color: transparent; color: #04101f; }
 .tag.prio  { background: rgba(251, 191, 36, 0.94); border-color: transparent; color: #241a01; }
 .tag.far   { background: rgba(7, 7, 12, 0.72); color: var(--ink-2); }
+.tag.fast  { background: rgba(34, 211, 238, 0.92); border-color: transparent; color: #04181d; }
 
 .thumb-foot {
   position: absolute; left: 12px; right: 12px; bottom: 10px; z-index: 2;

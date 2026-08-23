@@ -292,6 +292,21 @@ def classify(normalized: str) -> str:
     return "gpu"
 
 
+def effective_vram(title: str, model: dict) -> int:
+    """
+    The memory the card in *this ad* actually has.
+
+    Cut-down variants get sold under the full model's name — an RTX 3050 6GB,
+    or the Jieshuo RTX 3060 with 6GB instead of 12. Scoring those on the
+    catalog's nominal figure would hand them a memory bonus they have not
+    earned, so believe the smaller number when the title states one.
+    """
+    tv = title_vram(normalize(title))
+    if tv and tv < model["vram"]:
+        return tv
+    return model["vram"]
+
+
 def analyze(title: str):
     """(model|None, kind, [flags]) for a listing title."""
     n = normalize(title)

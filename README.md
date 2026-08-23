@@ -14,6 +14,7 @@ Three parts:
 | `scraper.py` | fetches, parses, scores and stores listings; fires alerts |
 | `gpus.py` | model catalog, title matcher, ad classifier |
 | `region.py` | which cities count, and how far out they are |
+| `market.py` | infers what cards actually *sell* for, from how fast ads vanish |
 | `imgcache.py` | on-disk photo cache (OLX blocks hotlinking) |
 | `app.py` | Flask backend + a single-page dashboard |
 | `run_scrape.sh` | cron entrypoint, `flock`-guarded |
@@ -49,6 +50,18 @@ catalog and the dashboard labels it (`◆ driver aberto` / `◇ proprietário`).
 AMD also gets more search effort: extra broad sweeps (`radeon`, `placa de
 video amd`, `placa de video radeon`) on top of the per-model queries.
 
+### VRAM
+
+Gaming first, so raster tier still leads the blend — but memory is what ages a
+card out, so 12 GB is treated as the comfortable floor: **+4** at 16 GB, **+3**
+at 12 GB, **+1.5** at 10 GB, and **−4** at 4 GB or less.
+
+That uses the memory the card in *that ad* actually has, not the catalog's
+nominal figure. Cut-down variants get sold under the full model's name — an
+RTX 3050 6GB, or the Jieshuo RTX 3060 with 6 GB instead of 12 — and handing
+those a 12 GB bonus was exactly the kind of quiet error that makes a score
+untrustworthy.
+
 ### A shortlist that gets special treatment
 
 `priority_models` (default: **RX 6750 XT** and **RX 7600 XT**) get:
@@ -63,6 +76,38 @@ Set `priority_max_price` equal to `max_price` to switch that headroom off.
 
 Scores land in five buckets — `steal` ≥ 78, `great` ≥ 64, `good` ≥ 52,
 `fair` ≥ 40, `meh` below that.
+
+### Asking price is not selling price
+
+The reference above is the median **asking** price, and sellers ask high — so
+"20% under the median ask" can still be more than anyone actually pays.
+
+But a listing that vanishes within a few days was priced at or below what the
+market bears, while one sitting untouched for a month was not. `market.py`
+turns that into a **clearing price**, using data the sweep already collects —
+no extra requests at all:
+
+- Tenure is measured from OLX's own posting date, not `first_seen`. Our own
+  first sighting is left-censored: an ad may have been up for weeks before the
+  radar ever ran.
+- Ads older than `EXPIRY_DAYS` (45) when they vanish are marked `expired` and
+  excluded — OLX ads time out on their own, which says nothing about price.
+- The ratio is learned **globally first**, pooled across every model, then
+  overridden per model only at 10+ of that model's own sales. On synthetic
+  data a 9-sample per-model estimate was still 10% off while the pooled
+  estimate was within 1%, so a noisy per-model override is worse than none.
+- A listing must be missing from **3 consecutive sweeps** before it counts as
+  gone, and absences are ignored entirely on a sweep with more than 3 HTTP
+  errors. Otherwise one failed request fabricates a sale for every listing
+  that query was the only source of.
+
+Until there are 12 observed fast sales the estimator reports "not ready" and
+scoring falls back to the asking median exactly as before. Once it is ready,
+the score is computed against the clearing price with a tighter band (22%
+under, versus 35% under the asking median), and the dashboard shows the
+learned ratio plus a **velocity curve** — how long ads last at each price
+level. That is what lets an alert say *"ads at this price usually last ~29h,
+move fast"*.
 
 ### The market price is learned, not hardcoded
 
@@ -258,8 +303,28 @@ Reference medians are computed *after* each sweep's rows land, not before —
 otherwise a fresh database scores everything against the catalog priors and
 the first run's alerts are meaningless.
 
-`db.init()` backfills columns added by later versions, so upgrading does not
-mean dropping the database and losing every learned median.
+`db.init()` creates tables, backfills columns added by later versions, and
+only then builds indexes — in that order, because an index over a
+newly-added column fails if it runs before the `ALTER TABLE` that adds it.
+Upgrading never means dropping the database and losing the learned medians.
 
 Prices, tiers and priors reflect the Brazilian used market and will drift.
 The medians self-correct; the priors will not.
+
+---
+
+## Other sources: what is actually reachable
+
+Probed directly rather than assumed:
+
+| Source | Result |
+|---|---|
+| **Kabum** | `catalog/v2/products` returns JSON with `price`, `old_price`, `discount_percentage`, `available`, `is_openbox` — usable as a **new-retail anchor** |
+| **Mercado Livre** | anonymous requests redirect to `/gz/account-verification`, and the public API answers `403`. The way in is their **free developer API** with your own registered app — not scraping |
+| **Pichau / Terabyte** | Cloudflare JS challenge. Defeating a bot protection is a different activity from reading a public page, so: no |
+| **Enjoei / Shopee** | client-rendered shells, no prices in the HTML, and negligible GPU volume anyway |
+| **Facebook Marketplace** | login-gated and aggressively anti-bot |
+
+A new-retail anchor is worth having because it bounds the whole scale: an
+RX 6600 at R$1.399 used against R$2.425 new is 58% of retail, which is normal.
+It is what catches a used card priced *above* new — and there are plenty.

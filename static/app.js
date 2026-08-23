@@ -185,6 +185,8 @@ function tags(x) {
   if (x.city === window.RADAR.homeCity) t.push(`<i class="tag local">${esc(x.city)}</i>`);
   else if (x.city) t.push(`<i class="tag">${esc(x.city)}</i>`);
   if (x.band === "nearby") t.push('<i class="tag far">~120 km</i>');
+  if (x.expected_hours != null && x.expected_hours <= 48)
+    t.push(`<i class="tag fast">sai em ~${Math.round(x.expected_hours)}h</i>`);
   if (x.age_hours != null && x.age_hours <= 24) t.push('<i class="tag fresh">novo</i>');
   if (x.price_drops)  t.push(`<i class="tag drop">↓ ${x.price_drops}× baixou</i>`);
   if (x.suspect)      t.push('<i class="tag warn">suspeito</i>');
@@ -223,7 +225,9 @@ function card(x) {
         ${off > 0 ? `<span class="off down">−${off}%</span>`
                   : `<span class="off up">${off === 0 ? "na média" : "+" + Math.abs(off) + "%"}</span>`}
       </div>
-      <div class="ref">típico ${brl(x.reference_price)} · ${x.perf_per_1k?.toFixed(0)} pts/R$1k</div>
+      <div class="ref">${x.clearing_price
+        ? `venda real ${brl(x.clearing_price)}` : `pedido típico ${brl(x.reference_price)}`}
+        · ${x.perf_per_1k?.toFixed(0)} pts/R$1k</div>
       <h3 class="title">${esc(x.title)}</h3>
       <div class="perfbar">
         <div class="track"><div class="fill" style="width:${Math.min(100, x.perf / 1.2)}%"></div></div>
@@ -317,6 +321,39 @@ function renderTables() {
     || `<tr><td colspan="9" style="color:var(--ink-3)">nada ainda</td></tr>`;
 }
 
+async function renderPanelMarket() {
+  const m = await fetch("/api/market").then(r => r.json());
+  const pct = Math.min(100, Math.round(100 * m.fast_sales_seen / m.min_sales));
+  $("#market-state").innerHTML = m.ready
+    ? `<div class="kv">
+         <div><dt>venda real</dt>
+              <dd style="color:var(--good)">${(m.global_ratio * 100).toFixed(0)}%</dd></div>
+         <div><dt>da mediana pedida</dt><dd style="font-size:13px">o desconto que o
+              vendedor realmente aceita</dd></div>
+         <div><dt>vendas vistas</dt><dd>${m.sales_seen}</dd></div>
+         <div><dt>vendas rápidas</dt><dd>${m.fast_sales_seen}</dd></div>
+       </div>`
+    : `<p style="font-size:13px;color:var(--ink-2);margin:0 0 8px">
+         Ainda aprendendo — <b>${m.fast_sales_seen} de ${m.min_sales}</b> vendas rápidas
+         observadas. Até chegar lá, a nota usa a mediana pedida, como antes.
+       </p>
+       <div class="perfbar"><div class="track"><div class="fill" style="width:${pct}%"></div></div>
+         <small>${pct}%</small></div>`;
+
+  $("#market-tbl tbody").innerHTML = m.velocity.map(b => `<tr>
+    <td>${b.from === 0 ? `abaixo de ${(b.to * 100).toFixed(0)}%`
+       : b.to > 5 ? `acima de ${(b.from * 100).toFixed(0)}%`
+       : `${(b.from * 100).toFixed(0)}% – ${(b.to * 100).toFixed(0)}%`}</td>
+    <td class="n">${b.n}</td>
+    <td class="n">${b.median_hours == null ? "—"
+       : b.median_hours < 48 ? Math.round(b.median_hours) + " h"
+       : Math.round(b.median_hours / 24) + " d"}</td></tr>`).join("");
+
+  $("#market-badge").textContent = m.ready
+    ? `venda real ≈ ${(m.global_ratio * 100).toFixed(0)}% do pedido`
+    : `aprendendo ${m.fast_sales_seen}/${m.min_sales}`;
+}
+
 async function renderPanelAlerts() {
   const { alerts } = await fetch("/api/alerts").then(r => r.json());
   $("#alerts-tbl tbody").innerHTML = alerts.map(a => `<tr>
@@ -403,7 +440,12 @@ async function openDrawer(id) {
 
       <div class="kv">
         <div><dt>preço</dt><dd style="color:${CLASS_COLOR[x.deal_class]}">${brl(x.price)}</dd></div>
-        <div><dt>típico</dt><dd>${brl(x.reference_price)}</dd></div>
+        <div><dt>pedido típico</dt><dd>${brl(x.reference_price)}</dd></div>
+        ${x.clearing_price ? `<div><dt>venda real est.</dt>
+          <dd style="color:var(--good)">${brl(x.clearing_price)}</dd></div>` : ""}
+        ${x.expected_hours != null ? `<div><dt>dura ~</dt>
+          <dd>${x.expected_hours < 48 ? Math.round(x.expected_hours) + " h"
+                 : Math.round(x.expected_hours / 24) + " d"}</dd></div>` : ""}
         <div><dt>economia</dt><dd style="color:${off > 0 ? "var(--good)" : "var(--ink-2)"}">${off > 0 ? brl(x.saving) : "—"}</dd></div>
         <div><dt>desconto</dt><dd>${off > 0 ? "−" + off + "%" : off + "%"}</dd></div>
         <div><dt>modelo</dt><dd style="font-size:14px">${esc(x.model_name)}</dd></div>
@@ -557,6 +599,7 @@ function bind() {
     p.open = true; p.scrollIntoView({ block: "center" });
   };
 
+  $("#panel-market").addEventListener("toggle", e => e.target.open && renderPanelMarket());
   $("#panel-alerts").addEventListener("toggle", e => e.target.open && renderPanelAlerts());
   $("#panel-runs").addEventListener("toggle", e => e.target.open && renderPanelRuns());
 
@@ -609,6 +652,7 @@ function poll(ms = 60000) {
       () => '<div class="sk"><div class="a"></div><div class="b"></div></div>').join("");
     await load({ announce: false });
   }
+  renderPanelMarket().catch(() => {});
   poll();
   if ("Notification" in window && Notification.permission === "default") {
     document.addEventListener("click", () => Notification.requestPermission(), { once: true });

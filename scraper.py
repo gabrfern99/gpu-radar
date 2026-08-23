@@ -27,6 +27,7 @@ from bs4 import BeautifulSoup
 import db
 import gpus
 import imgcache
+import market
 import notify
 import region
 from config import CFG
@@ -227,7 +228,7 @@ def reference_prices(con) -> dict:
     return refs
 
 
-def score(rec: dict, ref: int, now_utc: datetime) -> dict:
+def score(rec: dict, ref: int, now_utc: datetime, mkt: dict | None = None) -> dict:
     """
     Blend four signals into a 0-100 deal score:
       price   how far under the model's reference price it is  (40%)
@@ -242,10 +243,21 @@ def score(rec: dict, ref: int, now_utc: datetime) -> dict:
     nothing ever crossing the alert line.
     """
     price, perf = rec["price"], rec["perf"]
-    discount = (ref - price) / ref if ref and price else 0.0
     perf_per_1k = perf / (price / 1000) if price else 0.0
 
-    price_c = _clamp(discount / 0.35)              # 35% under market = full marks
+    # Score against the inferred *clearing* price once market.py has enough
+    # observed sales to estimate one — that is what cards actually go for, and
+    # it sits well below the asking median. Until then, fall back to the
+    # asking median exactly as before.
+    mkt = mkt or {}
+    clearing = mkt.get("clearing_prices", {}).get(rec.get("model_key")) if mkt.get("ready") else None
+    if clearing:
+        basis, band, basis_name = clearing, 0.22, "clearing price"
+    else:
+        basis, band, basis_name = ref, 0.35, None      # caller keeps its label
+
+    discount = (basis - price) / basis if basis and price else 0.0
+    price_c = _clamp(discount / band)
     power_c = _clamp((perf - 45) / (85 - 45))      # RX 580 tier -> RX 6650 XT tier
     value_c = _clamp((perf_per_1k - 35) / (90 - 35))
 
@@ -290,13 +302,28 @@ def score(rec: dict, ref: int, now_utc: datetime) -> dict:
     if rec.get("price_drops"):
         s += 2 * min(rec["price_drops"], 3)        # seller is motivated
 
+    # Gaming first, so raster tier still leads the blend — but VRAM has become
+    # the thing that ages a card out, and 12 GB is the comfortable floor now.
+    vram = rec.get("real_vram") or rec.get("vram") or 8
+    if vram >= 16:
+        s += 4
+    elif vram >= 12:
+        s += 3
+    elif vram >= 10:
+        s += 1.5
+    elif vram <= 4:
+        s -= 4                                     # 4 GB is a real limitation
+
     s = round(_clamp(s, 0, 100), 1)
     cls = ("steal" if s >= 78 else "great" if s >= 64 else
            "good" if s >= 52 else "fair" if s >= 40 else "meh")
     return {
-        "reference_price": ref,
-        "discount": round(discount, 4),
+        "reference_price": ref,               # asking median, kept for display
+        "clearing_price": clearing,
+        "basis_name": basis_name,
+        "discount": round(discount, 4),       # against whichever basis was used
         "perf_per_1k": round(perf_per_1k, 1),
+        "expected_hours": market.expected_hours(mkt, price, ref),
         "deal_score": s,
         "deal_class": cls,
     }
@@ -316,6 +343,21 @@ def is_suspect(price: int, ref: int, flags: list) -> bool:
 # ---------------------------------------------------------------------------
 
 _LOG_PREFIX = "[radar]"
+
+# How many consecutive sweeps a listing must be missing before we accept it is
+# actually gone. At one sweep every 20 minutes this is ~1 hour of absence.
+MISSES_TO_CONFIRM = 3
+
+# If a sweep hit more errors than this, its silence means nothing.
+MAX_ERRORS_TO_TRUST_ABSENCE = 3
+
+# OLX ads expire on their own after about two months. A listing that vanishes
+# after that long probably timed out rather than sold, so it must not pollute
+# the clearing-price estimate.
+EXPIRY_DAYS = 45
+
+# A card that clears this fast was priced at or below what the market will pay.
+FAST_SALE_HOURS = 72
 
 
 def log(msg: str):
@@ -402,7 +444,8 @@ def sweep(verbose=True) -> dict:
         if not c["price"]:
             continue
         c.update(model_key=model["key"], model_name=model["name"], brand=model["brand"],
-                 vram=model["vram"], perf=model["perf"], kind=kind, flags=flags)
+                 vram=model["vram"], perf=model["perf"], kind=kind, flags=flags,
+                 real_vram=gpus.effective_vram(c["title"], model))
         c["_posted_dt"] = parse_date(c["date_text"])
         c["posted_at"] = c["_posted_dt"].astimezone(timezone.utc).isoformat(
             timespec="seconds") if c["_posted_dt"] else None
@@ -453,7 +496,8 @@ def sweep(verbose=True) -> dict:
                     model_key=excluded.model_key, model_name=excluded.model_name,
                     brand=excluded.brand, vram=excluded.vram, perf=excluded.perf,
                     last_seen=excluded.last_seen, seen_count=listings.seen_count+1,
-                    price_drops=excluded.price_drops, gone=0
+                    price_drops=excluded.price_drops,
+                    gone=0, missed_sweeps=0, gone_at=NULL, outcome=NULL
             """, {**c, "flags": json.dumps(c["flags"]), "ts": started})
 
             if c["_is_new"] or c["_dropped"]:
@@ -462,15 +506,27 @@ def sweep(verbose=True) -> dict:
 
         # pass 2 — now that the rows are in, the medians are current
         refs = reference_prices(con)
+        mkt = market.summary(con)
+        if mkt["ready"]:
+            log(f"clearing-price model active: cards sell at "
+                f"{mkt['global_ratio']:.2f}x the asking median "
+                f"({mkt['fast_sales_seen']} fast sales observed)")
+        else:
+            log(f"clearing-price model still learning "
+                f"({mkt['fast_sales_seen']}/{mkt['min_sales']} fast sales) — "
+                f"scoring against asking medians")
+
         for c in keep:
             ref, ref_src = refs[c["model_key"]]
             c["suspect"] = int(is_suspect(c["price"], ref, c["flags"]))
-            c.update(score(c, ref, now_utc))
-            c["ref_source"] = ref_src
+            c.update(score(c, ref, now_utc, mkt))
+            c["ref_source"] = c.pop("basis_name") or ref_src
             con.execute("""UPDATE listings SET reference_price=?, ref_source=?, discount=?,
-                           perf_per_1k=?, deal_score=?, deal_class=?, suspect=? WHERE id=?""",
-                        (c["reference_price"], ref_src, c["discount"], c["perf_per_1k"],
-                         c["deal_score"], c["deal_class"], c["suspect"], c["id"]))
+                           perf_per_1k=?, deal_score=?, deal_class=?, suspect=?,
+                           clearing_price=?, expected_hours=? WHERE id=?""",
+                        (c["reference_price"], c["ref_source"], c["discount"],
+                         c["perf_per_1k"], c["deal_score"], c["deal_class"], c["suspect"],
+                         c["clearing_price"], c["expected_hours"], c["id"]))
 
             prev = existing.get(c["id"])
             if not (prev["alerted"] if prev else 0) and wants_alert(c):
@@ -482,8 +538,21 @@ def sweep(verbose=True) -> dict:
                                 else "standing bargain")
                 to_alert.append(c)
 
-        # anything we did not see this sweep is probably sold or expired
-        con.execute("UPDATE listings SET gone=1 WHERE last_seen < ?", (started,))
+        # Anything not seen this sweep *might* be gone — but a single failed
+        # request would otherwise fake a sale for every listing that query was
+        # the only source of. So count consecutive misses and only call it gone
+        # after MISSES_TO_CONFIRM of them, and only if the sweep went well
+        # enough to trust its absence.
+        con.execute("UPDATE listings SET missed_sweeps=0 WHERE last_seen >= ?", (started,))
+        if fetcher.errors <= MAX_ERRORS_TO_TRUST_ABSENCE:
+            con.execute("UPDATE listings SET missed_sweeps=missed_sweeps+1 "
+                        "WHERE last_seen < ?", (started,))
+            con.execute(f"UPDATE listings SET gone=1, gone_at=COALESCE(gone_at, ?) "
+                        f"WHERE missed_sweeps >= {MISSES_TO_CONFIRM} AND gone=0",
+                        (started,))
+            classify_outcomes(con)
+        else:
+            log(f"{fetcher.errors} http errors — not trusting absences this sweep")
         pruned = db.prune(con, CFG["stale_days"])
         if pruned:
             log(f"pruned {pruned} stale listings")
@@ -523,6 +592,40 @@ def sweep(verbose=True) -> dict:
             "cards": total_cards, "matched": len(keep), **stats}
 
 
+def classify_outcomes(con) -> None:
+    """
+    Label every confirmed-gone listing with how long it lasted and what that
+    most likely means. `tenure_hours` is measured from OLX's own posting date
+    where we have it — our own first_seen is left-censored, since a listing may
+    have been up for weeks before this radar ever ran.
+    """
+    rows = con.execute(
+        "SELECT id, posted_at, first_seen, gone_at, last_seen FROM listings "
+        "WHERE gone=1 AND outcome IS NULL").fetchall()
+    for r in rows:
+        start = r["posted_at"] or r["first_seen"]
+        end = r["gone_at"] or r["last_seen"]
+        if not (start and end):
+            continue
+        try:
+            t0, t1 = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        except ValueError:
+            continue
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=timezone.utc)
+        if t1.tzinfo is None:
+            t1 = t1.replace(tzinfo=timezone.utc)
+        hours = max(0.0, (t1 - t0).total_seconds() / 3600)
+        outcome = ("expired" if hours > EXPIRY_DAYS * 24
+                   else "sold_fast" if hours <= FAST_SALE_HOURS
+                   else "sold")
+        # gone_at must be persisted, not just read: market.observations()
+        # filters on it, so leaving it NULL silently drops the observation.
+        con.execute("UPDATE listings SET tenure_hours=?, outcome=?, "
+                    "gone_at=COALESCE(gone_at, ?) WHERE id=?",
+                    (round(hours, 1), outcome, end, r["id"]))
+
+
 def wants_alert(c: dict) -> bool:
     ceiling = CFG["max_price"]
     if c.get("model_key") in CFG["priority_models"]:
@@ -560,6 +663,7 @@ def _rescore_once() -> int:
     n = 0
     with db.connect() as con:
         refs = reference_prices(con)
+        mkt = market.summary(con)
         for r in con.execute("SELECT * FROM listings").fetchall():
             rec = db.row_to_dict(r)
             model = gpus.BY_KEY.get(rec["model_key"] or "")
@@ -570,21 +674,25 @@ def _rescore_once() -> int:
             _m, kind, flags = gpus.analyze(rec["title"])
             rec["kind"], rec["flags"], rec["perf"] = kind, flags, model["perf"]
             rec["brand"], rec["model_key"] = model["brand"], model["key"]
+            rec["real_vram"] = gpus.effective_vram(rec["title"], model)
             rec["band"] = region.band_of(rec.get("city") or rec.get("location") or "")
             rec["_posted_dt"] = (datetime.fromisoformat(rec["posted_at"])
                                  if rec["posted_at"] else None)
             ref, src = refs[model["key"]]
             rec["suspect"] = int(is_suspect(rec["price"], ref, rec["flags"]))
-            s = score(rec, ref, now_utc)
+            s = score(rec, ref, now_utc, mkt)
             con.execute("""UPDATE listings SET reference_price=?, ref_source=?, discount=?,
                            perf_per_1k=?, deal_score=?, deal_class=?, suspect=?,
                            model_name=?, brand=?, vram=?, perf=?, kind=?, flags=?,
-                           band=COALESCE(?, band)
+                           band=COALESCE(?, band),
+                           clearing_price=?, expected_hours=?
                            WHERE id=?""",
-                        (s["reference_price"], src, s["discount"], s["perf_per_1k"],
+                        (s["reference_price"], s["basis_name"] or src,
+                         s["discount"], s["perf_per_1k"],
                          s["deal_score"], s["deal_class"], rec["suspect"],
                          model["name"], model["brand"], model["vram"], model["perf"],
-                         kind, json.dumps(flags), rec["band"], rec["id"]))
+                         kind, json.dumps(flags), rec["band"],
+                         s["clearing_price"], s["expected_hours"], rec["id"]))
             n += 1
     return n
 

@@ -19,6 +19,7 @@ from flask import Flask, Response, jsonify, render_template, request, url_for
 import db
 import gpus
 import imgcache
+import market
 import notify
 import region
 from config import CFG, ROOT
@@ -251,6 +252,7 @@ def api_stats():
             f"ORDER BY deal_score DESC LIMIT 1", (CFG["max_price"],)).fetchone()
         last_run = con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         n_alerts = con.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        mkt_sum = market.summary(con)
         models = [dict(r) for r in con.execute(f"""
             SELECT model_key, model_name, brand, perf, vram,
                    COUNT(*) n, MIN(price) lo, MAX(price) hi,
@@ -277,7 +279,22 @@ def api_stats():
         "linux_drivers": gpus.LINUX_DRIVER,
         "scrape": {k: v for k, v in _scrape_state.items() if k != "result"},
         "imgcache": imgcache.stats(),
+        "market": {k: mkt_sum[k] for k in
+                   ("ready", "global_ratio", "sales_seen", "fast_sales_seen", "min_sales")},
     })
+
+
+@app.get("/api/market")
+def api_market():
+    """Clearing-price model: what cards actually sell for, and how fast."""
+    with db.connect() as con:
+        m = market.summary(con)
+        m["outcomes"] = {r[0]: r[1] for r in con.execute(
+            "SELECT outcome, COUNT(*) FROM listings WHERE outcome IS NOT NULL "
+            "GROUP BY outcome")}
+        m["pending"] = con.execute(
+            "SELECT COUNT(*) FROM listings WHERE gone=0 AND missed_sweeps>0").fetchone()[0]
+    return jsonify(m)
 
 
 @app.get("/api/alerts")

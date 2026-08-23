@@ -46,7 +46,8 @@ def body(c: dict) -> str:
     off = int(round(c["discount"] * 100))
     lines = [
         c["title"][:110],
-        f"{brl(c['price'])}  ({off:+d}% vs {brl(c['reference_price'])} typical)",
+        f"{brl(c['price'])}  ({off:+d}% vs {brl(c.get('clearing_price') or c['reference_price'])}"
+        f" {'real sale price' if c.get('clearing_price') else 'typical ask'})",
         f"{c['model_name']} · {c['vram']}GB · tier {int(c['perf'])} "
         f"· {c['perf_per_1k']:.0f} pts/R$1k",
         f"score {c['deal_score']:.0f}/100 — {CLASS_LABEL.get(c['deal_class'], '')}",
@@ -60,6 +61,10 @@ def body(c: dict) -> str:
         lines.append("⚠ suspiciously cheap — verify before paying anything")
     if c.get("kind") == "combo":
         lines.append("ℹ this ad is a whole PC, not just the card")
+    if c.get("expected_hours"):
+        h = c["expected_hours"]
+        when = f"{h:.0f}h" if h < 48 else f"{h/24:.0f} days"
+        lines.append(f"⏱ ads at this price usually last ~{when} — move fast")
     if c.get("_reason"):
         lines.append(f"trigger: {c['_reason']}")
     return "\n".join(lines)

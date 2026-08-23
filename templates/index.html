@@ -156,6 +156,24 @@
     </table></div>
   </details>
 
+  <details class="panel" id="panel-market">
+    <summary>💸 Preço real de venda <span class="count" style="margin-left:6px" id="market-badge"></span></summary>
+    <div class="panel-in">
+      <p style="color:var(--ink-2);font-size:13px;max-width:78ch;line-height:1.65">
+        O preço de referência normal é a <b>mediana do que os vendedores pedem</b> — e
+        vendedor pede alto. Mas anúncio que <b>desaparece rápido</b> estava no preço que o
+        mercado paga de verdade; anúncio que fica um mês parado, não. O radar acompanha
+        quanto tempo cada anúncio dura e usa isso para estimar o <b>preço real de
+        venda</b>, sem nenhuma requisição extra.
+      </p>
+      <div id="market-state"></div>
+      <table id="market-tbl" style="margin-top:14px">
+        <thead><tr><th>Preço vs mediana pedida</th><th class="n">Anúncios resolvidos</th>
+                   <th class="n">Tempo até sair</th></tr></thead>
+        <tbody></tbody></table>
+    </div>
+  </details>
+
   <details class="panel" id="panel-alerts">
     <summary>🔔 Alertas enviados</summary>
     <div class="panel-in"><table id="alerts-tbl">

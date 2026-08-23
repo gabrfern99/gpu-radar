@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS listings (
     flags           TEXT DEFAULT '[]',
     reference_price INTEGER,
     ref_source      TEXT,
+    clearing_price  INTEGER,
+    expected_hours  REAL,
     discount        REAL,
     perf_per_1k     REAL,
     deal_score      REAL,
@@ -39,6 +41,10 @@ CREATE TABLE IF NOT EXISTS listings (
     price_drops     INTEGER DEFAULT 0,
     initial_price   INTEGER,
     gone            INTEGER DEFAULT 0,
+    missed_sweeps   INTEGER DEFAULT 0,
+    gone_at         TEXT,
+    tenure_hours    REAL,
+    outcome         TEXT,
     alerted         INTEGER DEFAULT 0,
     via_query       TEXT
 );
@@ -46,6 +52,7 @@ CREATE INDEX IF NOT EXISTS ix_listings_score ON listings(deal_score DESC);
 CREATE INDEX IF NOT EXISTS ix_listings_model ON listings(model_key, price);
 CREATE INDEX IF NOT EXISTS ix_listings_seen  ON listings(last_seen DESC);
 CREATE INDEX IF NOT EXISTS ix_listings_city  ON listings(city);
+CREATE INDEX IF NOT EXISTS ix_listings_outcome ON listings(outcome, model_key);
 
 CREATE TABLE IF NOT EXISTS price_history (
     listing_id TEXT NOT NULL,
@@ -98,20 +105,32 @@ def connect() -> sqlite3.Connection:
 
 
 def init() -> None:
-    """Create the schema, then add any columns a newer version introduced.
-
-    CREATE TABLE IF NOT EXISTS silently keeps an old table shape, so adding a
-    column to SCHEMA above would otherwise mean dropping the database and
-    losing every learned price median. This backfills instead.
     """
+    Create tables, backfill any columns a newer version introduced, then build
+    indexes.
+
+    The order matters: CREATE TABLE IF NOT EXISTS silently keeps an old table
+    shape, so an index over a newly-added column would fail if it ran before
+    the ALTER TABLE that adds it.
+    """
+    import re as _re
+    stmts = [x.strip() for x in SCHEMA.split(";") if x.strip()]
+    tables = [x for x in stmts if x.upper().startswith("CREATE TABLE")]
+    indexes = [x for x in stmts if x.upper().startswith("CREATE INDEX")]
+
     with connect() as con:
-        con.executescript(SCHEMA)
+        for stmt in tables:
+            con.execute(stmt)
+
         for table, spec in _column_specs():
             have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
             for name, decl in spec:
                 if name not in have:
                     con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
                     print(f"[db] migrated: {table}.{name} added")
+
+        for stmt in indexes:
+            con.execute(stmt)
 
 
 def _column_specs():
