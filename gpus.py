@@ -144,8 +144,18 @@ _COMPILED = [(m, re.compile("|".join(m["pats"]))) for m in MODELS]
 
 # Fallback tier: the bare model number, no brand prefix. Sellers routinely
 # write "RX MSI 6750 XT" or "Placa 3060 12GB", which the branded patterns miss.
-# Only consulted when nothing branded matched, so false positives stay unlikely.
+# Only consulted when nothing branded matched AND the title actually talks
+# about a graphics card — otherwise a stray four-digit number turns a
+# CPU-and-motherboard kit into an RX 6700.
 _PREFIX_RX = re.compile(r"\\b(?:rx|rtx|gtx|arc)\\s\*")
+
+# Words that mean "this ad is about a graphics card", required before the
+# bare-number fallback is allowed to fire.
+_GPU_CONTEXT = re.compile(
+    r"\bplaca\s*de\s*v[i]deo\b|\bvga\b|\bgpu\b|\bgeforce\b|\bradeon\b"
+    r"|\bnvidia\b|\bamd\b|\bplaca\s*v[i]deo\b|\bgraphics\b"
+    r"|\b(?:asus|sapphire|powercolor|xfx|gigabyte|msi|zotac|galax|evga|pny|"
+    r"inno3d|palit|gainward|colorful|asrock|biostar)\b")
 _NUMBERED = [
     (m, re.compile("|".join(_PREFIX_RX.sub("", p) for p in m["pats"])))
     for m in MODELS
@@ -208,7 +218,9 @@ def match_model(title: str):
     filed as the 5700 XT it actually is.
     """
     n = normalize(title)
-    hits = _hits(n, _COMPILED) or _hits(n, _NUMBERED)
+    hits = _hits(n, _COMPILED)
+    if not hits and _GPU_CONTEXT.search(n):
+        hits = _hits(n, _NUMBERED)
     if not hits:
         return None
     hits.sort(key=lambda h: (h[0], h[1]))
@@ -240,9 +252,22 @@ CPU_PAT = (r"\bryzen\b|\bcore\s*i\s*[3579]\b|\bi[3579]\b|\bxeon\b|\bpentium\b"
 SYSTEM_PAT = (r"\bpc\b|\bcpu\b|\bcomputador\b|\bdesktop\b|\bworkstation\b"
               r"|\bnote\b|\bnotebook\b|\blaptop\b|\ball\s*in\s*one\b|\baio\b"
               r"|\bmonitores\b|\bgabinete\s*completo\b|\bsetup\s*completo\b"
+              r"|\bprocessador\b|\bplaca\s*mae\b|\bkit\s*(?:processador|placa|upgrade)\b"
+              r"|\bmemoria\s*ram\b|\bpente\s*de\s*memoria\b"
               r"|\bdell\s*(?:g\d|xps|inspiron|optiplex|vostro|latitude|precision|alienware)\b"
               r"|\blegion\b|\bloq\b|\bideapad\b|\bnitro\s*5\b|\bvictus\b|\baspire\b"
               r"|\bvivobook\b|\bthinkpad\b|\bmacbook\b|\bpredator\b|\bkatana\b")
+
+# Selling the packaging, a bracket, or a cooler — not the card. These name a
+# GPU model in full and read exactly like a bargain on price alone.
+ACCESSORY_PAT = (r"\bcaixa\s*vazia\b|\bs[o]\s*(?:a\s*)?caixa\b"
+                 r"|\bapenas\s*(?:a\s*)?caixa\b|\bsomente\s*(?:a\s*)?caixa\b"
+                 r"|\bcaixa\s*(?:da|do)\s*(?:rx|rtx|gtx|placa)\b"
+                 r"|\bsem\s*a\s*placa\b|\bvendo\s*(?:a\s*)?caixa\b"
+                 r"|\bbackplate\b|\briser\b|\bsuporte\s*(?:para|de)\s*(?:placa|gpu|vga)\b"
+                 r"|\bapenas\s*o\s*cooler\b|\bs[o]\s*o\s*cooler\b"
+                 r"|\bcooler\s*(?:da|do|para)\s*(?:rx|rtx|gtx|placa)\b"
+                 r"|\bwaterblock\b|\bmanual\b|\badesivo\b")
 
 # The seller's actual product is something else; the GPU is only a trade offer.
 OTHER_PAT = (r"\biphone\b|\bplaystation\b|\bps[45]\b|\bxbox\b|\bnintendo\b"
@@ -265,6 +290,7 @@ FLAG_PATS = [
     (r"\bwater\s*cooler\b|\bwatercooler\b|\bfonte\b", "bundle"),
 ]
 
+_ACCESSORY = re.compile(ACCESSORY_PAT)
 _CPU = re.compile(CPU_PAT)
 _SYSTEM = re.compile(SYSTEM_PAT)
 _OTHER = re.compile(OTHER_PAT)
@@ -283,6 +309,8 @@ def title_vram(normalized: str) -> int | None:
 
 
 def classify(normalized: str) -> str:
+    if _ACCESSORY.search(normalized):
+        return "accessory"
     if _WANTED.search(normalized):
         return "wanted"
     if _OTHER.search(normalized):
@@ -305,6 +333,18 @@ def effective_vram(title: str, model: dict) -> int:
     if tv and tv < model["vram"]:
         return tv
     return model["vram"]
+
+
+def inspect_text(text: str):
+    """
+    (kind, flags) for a free-text blob — a listing's full description.
+
+    Same rules as analyze(), minus the model matching: a description mentions
+    other cards in passing ("melhor que a 3060") and we do not want that to
+    override the model the title established.
+    """
+    n = normalize(text)
+    return classify(n), [k for rx, k in _FLAGS if rx.search(n)]
 
 
 def analyze(title: str):

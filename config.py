@@ -75,6 +75,9 @@ DEFAULTS = {
     "notify_telegram_token": "",
     "notify_telegram_chat": "",
     "max_alerts_per_run": 12,
+    # Before alerting, open the ad page and read the description. Titles lie by
+    # omission — the top-scoring listing this radar ever found was an empty box.
+    "verify_before_alert": True,
 
     # ------------------------------------------------------------------- web
     "host": "127.0.0.1",

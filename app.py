@@ -185,7 +185,11 @@ def fetch_listings(args) -> list[dict]:
 
     sql = f"SELECT * FROM listings WHERE {' AND '.join(where)} ORDER BY {sort} LIMIT ?"
     with db.connect() as con:
-        rows = [decorate(db.row_to_dict(r)) for r in con.execute(sql, params + [limit])]
+        rows = []
+        for r in con.execute(sql, params + [limit]):
+            d = db.row_to_dict(r)
+            d.pop("description", None)      # big, and unused by the grid
+            rows.append(decorate(d))
 
     if max_age is not None:
         rows = [r for r in rows if r["age_hours"] is not None and r["age_hours"] <= max_age]

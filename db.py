@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS listings (
     tenure_hours    REAL,
     outcome         TEXT,
     alerted         INTEGER DEFAULT 0,
+    description     TEXT,
+    photo_count     INTEGER,
+    verify_ok       INTEGER,
+    verify_note     TEXT,
+    verified_at     TEXT,
     via_query       TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_listings_score ON listings(deal_score DESC);

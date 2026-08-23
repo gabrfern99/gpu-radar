@@ -15,6 +15,7 @@ Three parts:
 | `gpus.py` | model catalog, title matcher, ad classifier |
 | `region.py` | which cities count, and how far out they are |
 | `market.py` | infers what cards actually *sell* for, from how fast ads vanish |
+| `detail.py` | reads an ad's own page before alerting on it |
 | `imgcache.py` | on-disk photo cache (OLX blocks hotlinking) |
 | `app.py` | Flask backend + a single-page dashboard |
 | `run_scrape.sh` | cron entrypoint, `flock`-guarded |
@@ -119,6 +120,45 @@ that goes stale — and "35% under market" means under *Goiânia's* market.
 This matters more than it sounds. Calibrated against national prices, every
 local listing scored in the 30s and nothing ever crossed the alert line.
 
+### Titles lie by omission
+
+The highest-scoring listing this radar ever produced was an **empty cardboard
+box** — *"CAIXA VAZIA VGA MSI RTX 3060"*, R$100, deal score 90. Six of them,
+in fact, all from the same seller. Nothing was technically wrong: it is a real
+ad, for a real model, at a real price. Only the price heuristic caught it, and
+that was luck — an empty box asking 31% of the card's value would have cleared
+the suspect threshold and alerted as a steal.
+
+Two defences, because one is not enough:
+
+1. **Title level** — `accessory` is now a kind of its own, alongside `combo`
+   and `wanted`. Empty boxes, backplates, risers, brackets and bare coolers
+   are excluded outright. (Note what is *not* in that list: "Triple Fan" and
+   "Triplo Fan" are genuine card names — Red Devil Triple Fan is a real
+   RX 6700 XT — so matching on `fan` would have thrown away real listings.)
+
+2. **Description level** — `detail.py` opens the ad's own page and reads it
+   before any alert is sent. OLX renders a schema.org Product block into every
+   ad page with the full description, price and photo list, which is far
+   steadier than scraping the visible markup.
+
+The verifier blocks on: untested, no working guarantee, "does not display",
+sold for parts, stated defect, artefacts, and "only the box". It warns without
+blocking on: mining use, repasted, no invoice, no returns, payment up front,
+**a modified BIOS or a card needing a patched driver** — that last one matters
+on Linux, and it is exactly what one "RTX 3060" in the current data turned out
+to need.
+
+This costs at most `max_alerts_per_run` requests per sweep and usually zero to
+four, because only listings that already cleared the score threshold are ever
+checked. A listing its own page disqualifies is remembered and never
+reconsidered.
+
+One thing deliberately *not* carried over from the title rules: the `combo`
+verdict. Nearly every description says "PC" somewhere — "testada no meu PC" —
+so treating that as evidence of a whole machine misfires on almost everything.
+Whether an ad sells a system is a question about its title.
+
 ### What gets thrown out
 
 A graphics card gets named in ads that are not selling a graphics card, and
@@ -128,6 +168,7 @@ bucket once dragged its "median" to R$3.000. So `gpus.py` classifies first:
 - **`gpu`** — a bare card. Scored and alertable.
 - **`combo`** — a whole PC or laptop that contains one. Shown with a badge,
   kept out of the medians, not alerted by default.
+- **`accessory`** — the box, a backplate, a riser, a bare cooler. Dropped.
 - **`wanted`** — someone *looking to buy* (`compro`, `procuro`). Dropped.
 - **`other`** — a phone or console whose seller merely accepts a GPU in
   trade. Dropped.
@@ -135,6 +176,23 @@ bucket once dragged its "median" to R$3.000. So `gpus.py` classifies first:
 Listings priced under 30% of the model's market price are flagged
 **`suspect`** and hidden by default. That is not a bargain, that is a scam,
 a photo of an empty box, or a typo.
+
+### Finding the cheap-but-old listings
+
+OLX ignores every sort value except `sf=1` (newest first) — `sf=2/3/4` are
+silently the same as no sort at all. So paging a query gives recent listings,
+and a genuinely cheap card posted three weeks ago sits below any page depth
+worth fetching.
+
+`ps` and `pe` (price from / price to) *do* work, so the sweep slices the
+buying range into narrow bands and pages each one. Within a R$300 band there
+are few enough ads that one or two pages exhaust them, whatever their age.
+
+Measured on this region: **six bracketed requests surfaced 52 in-catalogue
+cards, where the newest-first sweep needed 47 requests to find 49.** The
+coverage gain is modest — about 6% of listings were genuinely invisible before
+— but the efficiency gain is roughly eightfold per request, which is what
+makes sweeping more often affordable.
 
 ### Geography
 

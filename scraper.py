@@ -25,6 +25,7 @@ import requests
 from bs4 import BeautifulSoup
 
 import db
+import detail
 import gpus
 import imgcache
 import market
@@ -99,13 +100,39 @@ class Fetcher:
         return None
 
 
-def search_url(query: str, page: int = 1) -> str:
+def search_url(query: str, page: int = 1,
+               price_from: int | None = None, price_to: int | None = None) -> str:
     parts = [p for p in (CFG["category_path"], CFG["region_path"]) if p]
     path = "/" + "/".join(parts) if parts else ""
     url = f"{BASE}{path}?q={quote_plus(query)}&sf=1"
+    if price_from is not None:
+        url += f"&ps={price_from}"
+    if price_to is not None:
+        url += f"&pe={price_to}"
     if page > 1:
         url += f"&o={page}"
     return url
+
+
+def price_brackets() -> list[tuple[int, int]]:
+    """
+    Split the buying range into narrow price bands.
+
+    Sorting is newest-first only — OLX ignores every sort value we tried except
+    `sf=1` — so a cheap listing posted three weeks ago sits far below the page
+    depth we fetch and is effectively invisible. Slicing by price fixes that:
+    within a narrow band there are few enough ads that one or two pages
+    exhaust them, whatever their age.
+
+    Measured on this region: six bracketed requests surfaced 52 in-catalogue
+    cards, where the newest-first sweep needed 47 requests to find 49.
+    """
+    lo, hi = CFG["min_price"], max(CFG["max_price"], CFG["priority_max_price"])
+    edges = [lo, 600, 900, 1200, CFG["max_price"]]
+    if hi > CFG["max_price"]:
+        edges.append(hi)
+    edges = sorted({e for e in edges if lo <= e <= hi})
+    return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +396,15 @@ def plan() -> list[tuple[str, int]]:
     """(query, page) pairs for one sweep: a broad newest-first pass over
     everything the region lists as a graphics card, then one targeted query
     per model family to catch oddly-titled ads."""
-    jobs = [("placa de video", p) for p in range(1, CFG["broad_pages"] + 1)]
+    # Bracketed passes first: these are the ones that see cheap-but-old ads.
+    jobs = []
+    for lo, hi in price_brackets():
+        for page in (1, 2):
+            jobs.append(("placa de video", page, lo, hi))
+
+    # Then the plain newest-first pass, which catches anything titled oddly
+    # enough to miss the bracketed query, and anything with no price band.
+    jobs += [("placa de video", p) for p in range(1, min(CFG["broad_pages"], 3) + 1)]
     jobs += [("placa de video gamer", p) for p in range(1, 3)]
 
     # AMD gets extra breadth — it is the stack you actually want on Linux.
@@ -383,9 +418,10 @@ def plan() -> list[tuple[str, int]]:
     for q in gpus.QUERIES:
         jobs += [(q, p) for p in range(1, CFG["targeted_pages"] + 1)]
 
-    # de-dupe while keeping order
+    # normalise every job to (query, page, price_from, price_to)
+    norm = [j if len(j) == 4 else (j[0], j[1], None, None) for j in jobs]
     seen, out = set(), []
-    for j in jobs:
+    for j in norm:
         if j not in seen:
             seen.add(j); out.append(j)
     return out
@@ -398,13 +434,14 @@ def sweep(verbose=True) -> dict:
     now_utc = datetime.now(timezone.utc)
 
     jobs = plan()
-    log(f"sweep starting — {len(jobs)} requests planned")
+    log(f"sweep starting — {len(jobs)} requests planned "
+        f"({len(price_brackets())} price brackets)")
 
     # url-id -> card, deduped across queries
     cards: dict[str, dict] = {}
     total_cards = 0
-    for i, (query, page) in enumerate(jobs, 1):
-        url = search_url(query, page)
+    for i, (query, page, pfrom, pto) in enumerate(jobs, 1):
+        url = search_url(query, page, pfrom, pto)
         html = fetcher.get(url)
         if not html:
             log(f"  [{i}/{len(jobs)}] {query!r} p{page}: FAILED")
@@ -418,7 +455,9 @@ def sweep(verbose=True) -> dict:
                 cards[c["id"]] = c
                 fresh += 1
         if verbose:
-            log(f"  [{i}/{len(jobs)}] {query!r} p{page}: {len(found)} cards, {fresh} new to sweep")
+            band = f" R${pfrom}-{pto}" if pfrom is not None else ""
+            log(f"  [{i}/{len(jobs)}] {query!r}{band} p{page}: "
+                f"{len(found)} cards, {fresh} new to sweep")
         if not found and page > 1:
             continue
 
@@ -464,7 +503,7 @@ def sweep(verbose=True) -> dict:
     to_alert = []
     with db.connect() as con:
         existing = {r["id"]: db.row_to_dict(r) for r in con.execute(
-            "SELECT id, price, alerted, price_drops FROM listings")}
+            "SELECT id, price, alerted, price_drops, verify_ok FROM listings")}
 
         # pass 1 — upsert the raw facts
         for c in keep:
@@ -529,6 +568,8 @@ def sweep(verbose=True) -> dict:
                          c["clearing_price"], c["expected_hours"], c["id"]))
 
             prev = existing.get(c["id"])
+            if (prev and prev.get("verify_ok") == 0):
+                continue          # its own ad page already disqualified it
             if not (prev["alerted"] if prev else 0) and wants_alert(c):
                 # Deduped by the `alerted` flag rather than by newness, so a
                 # bargain that was already posted when the radar first saw it
@@ -575,6 +616,8 @@ def sweep(verbose=True) -> dict:
     # ---- alert ----------------------------------------------------------
     to_alert.sort(key=lambda c: -c["deal_score"])
     to_alert = to_alert[:CFG["max_alerts_per_run"]]
+    if to_alert and CFG["verify_before_alert"]:
+        to_alert = verify_candidates(fetcher, to_alert)
     if to_alert:
         log(f"alerting on {len(to_alert)} listing(s)")
         stats["alerted"] = notify.send_batch(to_alert)
@@ -624,6 +667,54 @@ def classify_outcomes(con) -> None:
         con.execute("UPDATE listings SET tenure_hours=?, outcome=?, "
                     "gone_at=COALESCE(gone_at, ?) WHERE id=?",
                     (round(hours, 1), outcome, end, r["id"]))
+
+
+def verify_candidates(fetcher: "Fetcher", candidates: list[dict]) -> list[dict]:
+    """
+    Open each candidate's own ad page and keep only the ones that survive.
+
+    This is the one place the radar spends a request per listing, and it is
+    worth it: it is bounded by max_alerts_per_run, it only ever looks at ads
+    that already cleared the score threshold, and it is the only way to catch
+    what a title omits.
+    """
+    kept = []
+    for c in candidates:
+        html = fetcher.get(c["url"])
+        if not html:
+            log(f"  verify: could not open {c['id']}, alerting unverified")
+            kept.append(c)
+            continue
+        det = detail.parse(html)
+        if not det:
+            log(f"  verify: no product data on {c['id']}, alerting unverified")
+            kept.append(c)
+            continue
+
+        v = detail.verify(c, det)
+        note = "; ".join(v["reasons"] + [f"({x})" for x in v["cautions"]])[:400]
+        c["photo_count"] = v["photos"]
+        c["description"] = det["description"][:4000]
+        c["kind"], c["flags"] = v["kind"], v["flags"]
+        if v["price_changed"]:
+            log(f"  verify: {c['id']} price is actually {v['price_changed']}")
+            c["price"] = v["price_changed"]
+
+        with db.connect() as con:
+            con.execute("""UPDATE listings SET description=?, photo_count=?, verify_ok=?,
+                           verify_note=?, verified_at=?, kind=?, flags=?, price=?
+                           WHERE id=?""",
+                        (c["description"], c["photo_count"], int(v["ok"]), note,
+                         db.now(), c["kind"], json.dumps(c["flags"]), c["price"], c["id"]))
+
+        if v["ok"]:
+            c["_cautions"] = v["cautions"]
+            kept.append(c)
+            if v["cautions"]:
+                log(f"  verify: {c['id']} ok — note: {'; '.join(v['cautions'])}")
+        else:
+            log(f"  verify: REJECTED {c['id']} — {'; '.join(v['reasons'])}")
+    return kept
 
 
 def wants_alert(c: dict) -> bool:

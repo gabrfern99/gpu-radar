@@ -65,6 +65,10 @@ def body(c: dict) -> str:
         h = c["expected_hours"]
         when = f"{h:.0f}h" if h < 48 else f"{h/24:.0f} days"
         lines.append(f"⏱ ads at this price usually last ~{when} — move fast")
+    if c.get("_cautions"):
+        lines.append("⚠ " + "; ".join(c["_cautions"][:3]))
+    if c.get("photo_count") is not None:
+        lines.append(f"{c['photo_count']} photo(s) on the ad")
     if c.get("_reason"):
         lines.append(f"trigger: {c['_reason']}")
     return "\n".join(lines)

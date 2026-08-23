@@ -185,6 +185,7 @@ function tags(x) {
   if (x.city === window.RADAR.homeCity) t.push(`<i class="tag local">${esc(x.city)}</i>`);
   else if (x.city) t.push(`<i class="tag">${esc(x.city)}</i>`);
   if (x.band === "nearby") t.push('<i class="tag far">~120 km</i>');
+  if (x.verify_ok === 1) t.push('<i class="tag ver">✓ anúncio lido</i>');
   if (x.expected_hours != null && x.expected_hours <= 48)
     t.push(`<i class="tag fast">sai em ~${Math.round(x.expected_hours)}h</i>`);
   if (x.age_hours != null && x.age_hours <= 24) t.push('<i class="tag fresh">novo</i>');
@@ -466,6 +467,23 @@ async function openDrawer(id) {
         <a class="btn primary" href="${esc(x.url)}" target="_blank" rel="noopener">Abrir na OLX ↗</a>
         <button class="btn" id="copy-url">Copiar link</button>
       </div>
+
+      ${x.verified_at ? `<div>
+        <p class="section-t">verificação do anúncio</p>
+        <div style="padding:12px 14px;border-radius:10px;font-size:13px;
+          background:${x.verify_ok ? "rgba(52,211,153,.09)" : "rgba(251,113,133,.10)"};
+          border:1px solid ${x.verify_ok ? "rgba(52,211,153,.28)" : "rgba(251,113,133,.32)"};
+          color:${x.verify_ok ? "var(--good)" : "var(--rose)"}">
+          ${x.verify_ok ? "✓ descrição lida, nada impeditivo" : "✕ reprovado na leitura da descrição"}
+          ${x.verify_note ? `<br><span style="color:var(--ink-2)">${esc(x.verify_note)}</span>` : ""}
+          <br><span style="color:var(--ink-3)">${x.photo_count ?? "?"} foto(s) no anúncio</span>
+        </div></div>` : ""}
+
+      ${x.description ? `<div>
+        <p class="section-t">descrição do vendedor</p>
+        <p style="margin:0;font-size:13px;line-height:1.6;color:var(--ink-2);
+           white-space:pre-wrap;max-height:220px;overflow:auto">${esc(x.description)}</p>
+      </div>` : ""}
 
       ${x.history?.length > 1 ? `<div>
         <p class="section-t">histórico de preço</p>${sparkline(x.history)}</div>` : ""}
